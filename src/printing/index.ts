@@ -4,6 +4,25 @@ import { printJobEscp } from './escp.ts';
 import { printJobCups } from './cups.ts';
 import { printJobImageFeed, printTestJobImageFeed } from './imagefeed.ts';
 
+export class PrinterUnavailableError extends Error {
+    constructor(message = 'Printer is unavailable') {
+        super(message);
+        this.name = 'PrinterUnavailableError';
+    }
+}
+
+function isUnavailableError(error: unknown): boolean {
+    if (!(error instanceof Error)) return false;
+    const code = 'code' in error ? error.code : undefined;
+    const message = error.message.toLowerCase();
+    return code === 'ENOENT' ||
+        code === 'ENODEV' ||
+        code === 'ENXIO' ||
+        message.includes('printer or class does not exist') ||
+        message.includes('no printer') ||
+        message.includes('device or resource busy');
+}
+
 export async function printJob(job: PrintJob): Promise<void> {
     const cfg = getCurrentConfig();
     const printConfig = cfg.printConfig;
@@ -12,20 +31,27 @@ export async function printJob(job: PrintJob): Promise<void> {
         throw new Error('No print mode configured. Set a print mode in the Control Panel.');
     }
 
-    switch (printConfig.mode) {
-        case 'escp':
-            await printJobEscp(job, printConfig.serialPort);
-            break;
-        case 'cups':
-            await printJobCups(job, printConfig);
-            break;
-        case 'imagefeed':
-            await printJobImageFeed(job);
-            break;
-        default: {
-            const never: never = printConfig;
-            throw new Error(`Unknown print mode: ${(never as { mode: string }).mode}`);
+    try {
+        switch (printConfig.mode) {
+            case 'escp':
+                await printJobEscp(job, printConfig.serialPort);
+                break;
+            case 'cups':
+                await printJobCups(job, printConfig);
+                break;
+            case 'imagefeed':
+                await printJobImageFeed(job);
+                break;
+            default: {
+                const never: never = printConfig;
+                throw new Error(`Unknown print mode: ${(never as { mode: string }).mode}`);
+            }
         }
+    } catch (error) {
+        if (isUnavailableError(error)) {
+            throw new PrinterUnavailableError(error instanceof Error ? error.message : String(error));
+        }
+        throw error;
     }
 }
 

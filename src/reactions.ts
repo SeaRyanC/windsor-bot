@@ -2,6 +2,7 @@ export const Reaction = {
     ok: "✅",
     what: "❓",
     fail: "❌",
-    thinking: "🧠"
+    thinking: "🧠",
+    waiting: "⏳"
 } as const;
 export type Reaction = (typeof Reaction)[keyof typeof Reaction];

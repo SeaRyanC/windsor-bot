@@ -22,7 +22,10 @@ The bot does not require or assume 24/7 uptime. On startup you should scan prior
 
 For non-recurring items, use **reactions** to indicate that you've complied (e.g. printed or whatever) to a request. Use the ✅ reaction upon successfully fulfilling the request.
 
-If printing fails, react with ⏸️ and post a reply that explains what went wrong.
+If printing fails, react with ⏸️ and post a reply that explains what went wrong. If the
+printer device is unavailable, react with ⏳ instead and retry every 3 seconds until it
+returns; then print the pending job and replace ⏳ with ✅. On startup, ⏳ reactions are
+treated as pending jobs and retried.
 
 The intended user workflow on fixing a printer is to power-cycle the Raspberry Pi, so you should attempt to re-process these messages on startup.
 

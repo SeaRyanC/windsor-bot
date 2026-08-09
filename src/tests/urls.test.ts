@@ -1,6 +1,18 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { extractUrls, stripUrls, replaceUrlsInText } from '../bot.ts';
+import { extractUrls, parseCommand, stripUrls, replaceUrlsInText } from '../bot.ts';
+
+test('parses commands with or without a space after the prefix', () => {
+    assert.deepEqual(parseCommand('!command'), { name: 'command', args: '' });
+    assert.deepEqual(parseCommand('! command'), { name: 'command', args: '' });
+});
+
+test('parses command arguments after optional prefix whitespace', () => {
+    assert.deepEqual(parseCommand('! command first second'), {
+        name: 'command',
+        args: 'first second',
+    });
+});
 
 test('extracts a single URL', () => {
     const urls = extractUrls('Check this out https://example.com for more info');

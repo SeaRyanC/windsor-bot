@@ -1,7 +1,16 @@
+import { mkdtemp, rm } from 'fs/promises';
+import { tmpdir } from 'os';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { reconcileChannels, getCurrentConfig, updateConfig, hashPassword } from '../config.ts';
 import type { ChannelMapping } from '../types.ts';
+
+const configDir = await mkdtemp(`${tmpdir()}/windsor-config-test-`);
+process.env['WINDSOR_CONFIG_PATH'] = `${configDir}/windsor.config.json`;
+const { reconcileChannels, getCurrentConfig, updateConfig, hashPassword } = await import('../config.ts');
+
+test.after(async () => {
+    await rm(configDir, { recursive: true, force: true });
+});
 
 // Setup: initialize config with some channel mappings
 async function withChannels(mappings: ChannelMapping[], fn: () => Promise<void>): Promise<void> {

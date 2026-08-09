@@ -11,7 +11,7 @@ import { formatScheduleDate, generateIcon, getNextOccurrence, parseRecurringSche
 import { Commands } from './commands/index.ts';
 import { getCurrentConfig, reconcileChannels } from './config.ts';
 import { formatTimestamp } from './printer.ts';
-import { printJob } from './printing/index.ts';
+import { printJob, PrinterUnavailableError } from './printing/index.ts';
 import { logEvent, status } from './server.ts';
 import type {
     AccumulatingListConfig,
@@ -24,6 +24,7 @@ import { Reaction } from './reactions.ts';
 
 const MAX_MESSAGE_CHARS = 800;
 const MAX_URLS = 5;
+const PRINTER_POLL_INTERVAL_MS = 3_000;
 
 
 const URL_REGEX = /https:\/\/[^\s<>"']+/g;
@@ -108,6 +109,10 @@ async function reactSafe(message: Message, emoji: Reaction): Promise<void> {
         }
         if (emoji === Reaction.ok) {
             await removeReactionSafe(message, Reaction.fail);
+            await removeReactionSafe(message, Reaction.waiting);
+        }
+        if (emoji === Reaction.waiting) {
+            await removeReactionSafe(message, Reaction.fail);
         }
     } catch {
         // ignore
@@ -130,6 +135,15 @@ function isPrintTrigger(content: string): boolean {
 function isCommandMessage(content: string): boolean {
     const trimmed = content.trim();
     return trimmed.startsWith('!') || trimmed.startsWith('/');
+}
+
+export function parseCommand(content: string): { name: string; args: string } | null {
+    const match = content.trim().match(/^[!/]\s*(\S+)(?:\s+(.*))?$/);
+    if (!match?.[1]) return null;
+    return {
+        name: match[1].toLowerCase(),
+        args: match[2]?.trim() ?? '',
+    };
 }
 
 
@@ -155,6 +169,9 @@ export function createWindsorBot(): WindsorBotHandle {
             GatewayIntentBits.GuildMessageReactions,
         ],
     });
+    const pendingPrints = new Map<string, { message: Message; retry: () => Promise<void> }>();
+    const processingPending = new Set<string>();
+    let pendingPoller: ReturnType<typeof setInterval> | null = null;
 
     client.on('clientReady', () => void onReady());
     client.on('messageCreate', (msg) => void onMessage(msg));
@@ -176,6 +193,10 @@ export function createWindsorBot(): WindsorBotHandle {
     }
 
     function destroy(): void {
+        if (pendingPoller) {
+            clearInterval(pendingPoller);
+            pendingPoller = null;
+        }
         client.destroy();
     }
 
@@ -189,6 +210,35 @@ export function createWindsorBot(): WindsorBotHandle {
             && ch.type !== ChannelType.GuildStageVoice
             && ch.type !== ChannelType.GuildForum
             && ch.type !== ChannelType.GuildMedia;
+    }
+
+    function enqueuePendingPrint(message: Message, retry: () => Promise<void>): void {
+        pendingPrints.set(message.id, { message, retry });
+        if (pendingPoller) return;
+        pendingPoller = setInterval(() => void pollPendingPrints(), PRINTER_POLL_INTERVAL_MS);
+        logEvent('info', `Printer unavailable; polling for ${pendingPrints.size} pending print(s)`);
+    }
+
+    async function pollPendingPrints(): Promise<void> {
+        for (const [messageId, pending] of pendingPrints) {
+            if (processingPending.has(messageId)) continue;
+            processingPending.add(messageId);
+            try {
+                await pending.retry();
+                await refreshMessage(pending.message);
+                if (!pending.message.reactions.cache.get(Reaction.waiting)?.me) {
+                    pendingPrints.delete(messageId);
+                }
+            } catch (err) {
+                logEvent('error', `Pending print retry failed: ${err}`);
+            } finally {
+                processingPending.delete(messageId);
+            }
+        }
+        if (pendingPrints.size === 0 && pendingPoller) {
+            clearInterval(pendingPoller);
+            pendingPoller = null;
+        }
     }
 
     async function onReady(): Promise<void> {
@@ -275,7 +325,11 @@ export function createWindsorBot(): WindsorBotHandle {
                     if (msg.reference) continue;
                     if (msg.author.id === botId) continue;
                     if (isCommandMessage(msg.content)) {
-                        await handleOnDemand(msg);
+                        await handleOnDemand(msg, await hasReaction(msg, Reaction.waiting));
+                        continue;
+                    }
+                    if (await hasReaction(msg, Reaction.waiting)) {
+                        await handleImmediatePrint(msg, config, false, true);
                         continue;
                     }
                     if (await hasAnyReaction(msg)) continue;
@@ -289,6 +343,10 @@ export function createWindsorBot(): WindsorBotHandle {
                     if (msg.reference) continue;
                     if (msg.author.id === botId) continue;
                     if (!isPrintTrigger(msg.content)) continue;
+                    if (await hasReaction(msg, Reaction.waiting)) {
+                        await handleAccumulatingPrint(msg, config, messages, true);
+                        continue;
+                    }
                     if (await hasAnyReaction(msg)) continue;
                     await handleAccumulatingPrint(msg, config, messages);
                 }
@@ -303,6 +361,10 @@ export function createWindsorBot(): WindsorBotHandle {
                     if (msg.author.bot) continue;
                     if (msg.reference) continue;
                     if (msg.author.id === botId) continue;
+                    if (await hasReaction(msg, Reaction.waiting)) {
+                        await handleOnDemand(msg, true);
+                        continue;
+                    }
                     if (await hasAnyReaction(msg)) continue;
                     await handleOnDemand(msg);
                 }
@@ -396,6 +458,7 @@ export function createWindsorBot(): WindsorBotHandle {
         message: Message,
         config: ImmediatePrintConfig,
         retryFailed = false,
+        retryPending = false,
     ): Promise<void> {
         const rawContent = message.content;
         const urls = extractUrls(rawContent);
@@ -429,17 +492,26 @@ export function createWindsorBot(): WindsorBotHandle {
 
         await refreshMessage(message);
         if (await hasAnyReaction(message)) {
-            if (!retryFailed || !message.reactions.cache.get(Reaction.fail)?.me) {
+            const waiting = message.reactions.cache.get(Reaction.waiting)?.me;
+            if (!retryPending && (!retryFailed || !message.reactions.cache.get(Reaction.fail)?.me)) {
                 await removeReactionSafe(message, Reaction.thinking);
                 return;
             }
+            if (retryPending && !waiting) return;
         }
 
         try {
             await printJob(job);
+            pendingPrints.delete(message.id);
             await reactSafe(message, Reaction.ok);
             logEvent('print', `Printed immediate message from ${message.author.username}`);
         } catch (err) {
+            if (err instanceof PrinterUnavailableError) {
+                await reactSafe(message, Reaction.waiting);
+                enqueuePendingPrint(message, () => handleImmediatePrint(message, config, false, true));
+                logEvent('info', `Printer unavailable for immediate message from ${message.author.username}`);
+                return;
+            }
             await reactSafe(message, Reaction.fail);
             await replySafe(message, `⏸️ Print failed: ${err instanceof Error ? err.message : String(err)}`);
             logEvent('error', `Print failed: ${err}`);
@@ -451,6 +523,7 @@ export function createWindsorBot(): WindsorBotHandle {
         triggerMessage: Message,
         config: AccumulatingListConfig,
         allMessages: Message[],
+        retryPending = false,
     ): Promise<void> {
         const botId = client.user?.id;
 
@@ -512,13 +585,25 @@ export function createWindsorBot(): WindsorBotHandle {
         }
 
         await refreshMessage(triggerMessage);
-        if (await hasAnyReaction(triggerMessage)) return;
+        if (await hasAnyReaction(triggerMessage)) {
+            if (!retryPending || !triggerMessage.reactions.cache.get(Reaction.waiting)?.me) return;
+        }
 
         try {
             await printJob(job);
+            pendingPrints.delete(triggerMessage.id);
             await reactSafe(triggerMessage, Reaction.ok);
             logEvent('print', `Printed accumulating list (${lines.length} items)`);
         } catch (err) {
+            if (err instanceof PrinterUnavailableError) {
+                await reactSafe(triggerMessage, Reaction.waiting);
+                enqueuePendingPrint(
+                    triggerMessage,
+                    () => handleAccumulatingPrint(triggerMessage, config, allMessages, true),
+                );
+                logEvent('info', `Printer unavailable for accumulating list in #${triggerMessage.channelId}`);
+                return;
+            }
             await reactSafe(triggerMessage, Reaction.fail);
             await replySafe(triggerMessage, `⏸️ Print failed: ${err instanceof Error ? err.message : String(err)}`);
             logEvent('error', `Accumulating print failed: ${err}`);
@@ -657,14 +742,10 @@ export function createWindsorBot(): WindsorBotHandle {
         return failed.length;
     }
 
-    async function handleOnDemand(message: Message): Promise<void> {
-        const content = message.content.trim();
-        if (!content.startsWith('!') && !content.startsWith('/')) return;
-
-        const afterPrefix = content.slice(1).trim();
-        const spaceIdx = afterPrefix.indexOf(' ');
-        const commandName = (spaceIdx === -1 ? afterPrefix : afterPrefix.slice(0, spaceIdx)).toLowerCase();
-        const args = spaceIdx === -1 ? '' : afterPrefix.slice(spaceIdx + 1).trim();
+    async function handleOnDemand(message: Message, retryPending = false): Promise<void> {
+        const parsed = parseCommand(message.content);
+        if (!parsed) return;
+        const { name: commandName, args } = parsed;
 
         let foundCommand = false;
         for (const cmd of Commands) {
@@ -672,13 +753,25 @@ export function createWindsorBot(): WindsorBotHandle {
                 foundCommand = true;
                 logEvent('command', `Command '${commandName}' invoked by ${message.author.username}`);
                 await refreshMessage(message);
-                if (await hasAnyReaction(message)) return;
+                if (await hasAnyReaction(message) && !retryPending) return;
                 const ctx: import('./commands/index.ts').CommandRunContext = {
                     printJob,
                     retryFailedMessages: () => retryFailedMessages(message),
                 };
-                const result = await cmd.invoke(args, ctx);
+                let result;
+                try {
+                    result = await cmd.invoke(args, ctx);
+                } catch (err) {
+                    if (err instanceof PrinterUnavailableError) {
+                        await reactSafe(message, Reaction.waiting);
+                        enqueuePendingPrint(message, () => handleOnDemand(message, true));
+                        logEvent('info', `Printer unavailable for command '${commandName}'`);
+                        return;
+                    }
+                    throw err;
+                }
                 if (result.kind === 'pass') {
+                    pendingPrints.delete(message.id);
                     await reactSafe(message, "✅");
                     if (result.reply) {
                         await replySafe(message, result.reply);

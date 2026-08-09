@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { loadConfig } from './config.ts';
+import { getCurrentConfig, loadConfig } from './config.ts';
 import { logEvent, startDiagnosticsServer, setDiscordChannels, setRestartHandler, setRefreshChannelsHandler } from './server.ts';
 import { createWindsorBot, checkScheduledTasks } from './bot.ts';
 import { ChannelType } from 'discord.js';
@@ -25,23 +25,7 @@ async function startBot(cfg: WindsorConfig): Promise<void> {
         await nextBot.start(cfg.discordToken);
         bot = nextBot;
 
-        // Register discord channels in server for the web UI
-        const guilds = [...nextBot.getClient().guilds.cache.values()];
-        const channels: Array<{ id: string; name: string }> = [];
-        for (const guild of guilds) {
-            const fetched = await guild.channels.fetch();
-            for (const ch of fetched.values()) {
-                if (
-                    ch?.isTextBased() &&
-                    'name' in ch &&
-                    ch.type !== ChannelType.GuildVoice &&
-                    ch.type !== ChannelType.GuildStageVoice
-                ) {
-                    channels.push({ id: ch.id, name: (ch as { name: string }).name });
-                }
-            }
-        }
-        setDiscordChannels(channels);
+        await refreshChannels();
 
         logEvent('startup', 'Bot started successfully');
     } catch (err) {
@@ -75,7 +59,14 @@ async function refreshChannels(): Promise<void> {
         return;
     }
     logEvent('info', 'Refreshing Discord channels…');
-    const guilds = [...bot.getClient().guilds.cache.values()];
+    const serverId = getCurrentConfig().serverId;
+    const guilds = serverId
+        ? [bot.getClient().guilds.cache.get(serverId)].filter((guild): guild is NonNullable<typeof guild> => guild !== undefined)
+        : [...bot.getClient().guilds.cache.values()];
+    if (serverId && guilds.length === 0) {
+        throw new Error(`Configured serverId ${serverId} not found`);
+    }
+
     const channels: Array<{ id: string; name: string }> = [];
     for (const guild of guilds) {
         const fetched = await guild.channels.fetch();
