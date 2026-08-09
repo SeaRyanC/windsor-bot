@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'http';
 import { execFile } from 'child_process';
 import { build } from 'esbuild';
-import { readFile, stat } from 'fs/promises';
+import { access, readFile, stat } from 'fs/promises';
 import { promisify } from 'util';
 import { spawn } from 'child_process';
 import { dirname, join } from 'path';
@@ -81,13 +81,28 @@ async function readPackageVersion(): Promise<string> {
 }
 
 async function updateGlobalBot(): Promise<string> {
-    // GUI-launched processes may not inherit the shell PATH where npm is installed.
-    const npmEnv = {
-        ...process.env,
-        PATH: [dirname(process.execPath), process.env.PATH].filter(Boolean).join(process.platform === 'win32' ? ';' : ':'),
-    };
-    await execFileAsync('npm', ['install', '-g', 'windsor-bot@latest'], { env: npmEnv });
-    const { stdout } = await execFileAsync('npm', ['root', '-g'], { env: npmEnv });
+    const npmCliCandidates = [
+        process.env['npm_execpath'],
+        join(dirname(process.execPath), '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+        '/usr/local/lib/node_modules/npm/bin/npm-cli.js',
+        '/opt/homebrew/lib/node_modules/npm/bin/npm-cli.js',
+    ].filter((candidate): candidate is string => Boolean(candidate));
+    let npmCliPath: string | undefined;
+    for (const candidate of npmCliCandidates) {
+        try {
+            await access(candidate);
+            npmCliPath = candidate;
+            break;
+        } catch {
+            // Try the next known npm installation location.
+        }
+    }
+    if (!npmCliPath) throw new Error('Unable to locate npm');
+
+    const npmCli = npmCliPath;
+    const runNpm = (args: string[]) => execFileAsync(process.execPath, [npmCli, ...args]);
+    await runNpm(['install', '-g', 'windsor-bot@latest']);
+    const { stdout } = await runNpm(['root', '-g']);
     const packageJsonPath = join(stdout.trim(), 'windsor-bot', 'package.json');
     const packageJson = JSON.parse(await readFile(packageJsonPath, 'utf8')) as { version?: unknown };
     if (typeof packageJson.version !== 'string') throw new Error('Updated package does not contain a valid version');
