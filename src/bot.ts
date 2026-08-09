@@ -11,7 +11,7 @@ import { formatScheduleDate, generateIcon, getNextOccurrence, parseRecurringSche
 import { Commands } from './commands/index.ts';
 import { getCurrentConfig, reconcileChannels } from './config.ts';
 import { formatTimestamp } from './printer.ts';
-import { printJob, PrinterUnavailableError } from './printing/index.ts';
+import { isPrinterUnavailableError, printJob } from './printing/index.ts';
 import { logEvent, status } from './server.ts';
 import type {
     AccumulatingListConfig,
@@ -506,7 +506,7 @@ export function createWindsorBot(): WindsorBotHandle {
             await reactSafe(message, Reaction.ok);
             logEvent('print', `Printed immediate message from ${message.author.username}`);
         } catch (err) {
-            if (err instanceof PrinterUnavailableError) {
+            if (isPrinterUnavailableError(err)) {
                 await reactSafe(message, Reaction.waiting);
                 enqueuePendingPrint(message, () => handleImmediatePrint(message, config, false, true));
                 logEvent('info', `Printer unavailable for immediate message from ${message.author.username}`);
@@ -595,7 +595,7 @@ export function createWindsorBot(): WindsorBotHandle {
             await reactSafe(triggerMessage, Reaction.ok);
             logEvent('print', `Printed accumulating list (${lines.length} items)`);
         } catch (err) {
-            if (err instanceof PrinterUnavailableError) {
+            if (isPrinterUnavailableError(err)) {
                 await reactSafe(triggerMessage, Reaction.waiting);
                 enqueuePendingPrint(
                     triggerMessage,
@@ -762,7 +762,7 @@ export function createWindsorBot(): WindsorBotHandle {
                 try {
                     result = await cmd.invoke(args, ctx);
                 } catch (err) {
-                    if (err instanceof PrinterUnavailableError) {
+                    if (isPrinterUnavailableError(err)) {
                         await reactSafe(message, Reaction.waiting);
                         enqueuePendingPrint(message, () => handleOnDemand(message, true));
                         logEvent('info', `Printer unavailable for command '${commandName}'`);

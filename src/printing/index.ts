@@ -11,7 +11,7 @@ export class PrinterUnavailableError extends Error {
     }
 }
 
-function isUnavailableError(error: unknown): boolean {
+export function isPrinterUnavailableError(error: unknown): boolean {
     let current: unknown = error;
     for (let depth = 0; depth < 4 && current; depth++) {
         if (!(current instanceof Error)) return false;
@@ -59,7 +59,7 @@ export async function printJob(job: PrintJob): Promise<void> {
             }
         }
     } catch (error) {
-        if (isUnavailableError(error)) {
+        if (isPrinterUnavailableError(error)) {
             throw new PrinterUnavailableError(error instanceof Error ? error.message : String(error));
         }
         throw error;
