@@ -81,8 +81,13 @@ async function readPackageVersion(): Promise<string> {
 }
 
 async function updateGlobalBot(): Promise<string> {
-    await execFileAsync('npm', ['install', '-g', 'windsor-bot@latest']);
-    const { stdout } = await execFileAsync('npm', ['root', '-g']);
+    // GUI-launched processes may not inherit the shell PATH where npm is installed.
+    const npmEnv = {
+        ...process.env,
+        PATH: [dirname(process.execPath), process.env.PATH].filter(Boolean).join(process.platform === 'win32' ? ';' : ':'),
+    };
+    await execFileAsync('npm', ['install', '-g', 'windsor-bot@latest'], { env: npmEnv });
+    const { stdout } = await execFileAsync('npm', ['root', '-g'], { env: npmEnv });
     const packageJsonPath = join(stdout.trim(), 'windsor-bot', 'package.json');
     const packageJson = JSON.parse(await readFile(packageJsonPath, 'utf8')) as { version?: unknown };
     if (typeof packageJson.version !== 'string') throw new Error('Updated package does not contain a valid version');
