@@ -12,15 +12,26 @@ export class PrinterUnavailableError extends Error {
 }
 
 function isUnavailableError(error: unknown): boolean {
-    if (!(error instanceof Error)) return false;
-    const code = 'code' in error ? error.code : undefined;
-    const message = error.message.toLowerCase();
-    return code === 'ENOENT' ||
-        code === 'ENODEV' ||
-        code === 'ENXIO' ||
-        message.includes('printer or class does not exist') ||
-        message.includes('no printer') ||
-        message.includes('device or resource busy');
+    let current: unknown = error;
+    for (let depth = 0; depth < 4 && current; depth++) {
+        if (!(current instanceof Error)) return false;
+        const code = 'code' in current ? String(current.code) : '';
+        const message = `${current.name} ${current.message}`.toLowerCase();
+        if (
+            code === 'ENOENT' ||
+            code === 'ENODEV' ||
+            code === 'ENXIO' ||
+            message.includes('enoent') ||
+            message.includes('no such file or directory') ||
+            message.includes('printer or class does not exist') ||
+            message.includes('no printer') ||
+            message.includes('device or resource busy')
+        ) {
+            return true;
+        }
+        current = 'cause' in current ? current.cause : undefined;
+    }
+    return false;
 }
 
 export async function printJob(job: PrintJob): Promise<void> {
