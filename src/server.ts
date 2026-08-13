@@ -81,26 +81,41 @@ async function readPackageVersion(): Promise<string> {
 }
 
 async function updateGlobalBot(): Promise<string> {
-    const npmCliCandidates = [
+    const npmCandidates = [
         process.env['npm_execpath'],
         join(dirname(process.execPath), '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+        join(dirname(process.execPath), 'npm'),
         '/usr/local/lib/node_modules/npm/bin/npm-cli.js',
         '/opt/homebrew/lib/node_modules/npm/bin/npm-cli.js',
-    ].filter((candidate): candidate is string => Boolean(candidate));
-    let npmCliPath: string | undefined;
-    for (const candidate of npmCliCandidates) {
+        '/usr/lib/node_modules/npm/bin/npm-cli.js',
+        '/usr/share/nodejs/npm/bin/npm-cli.js',
+        '/usr/local/bin/npm',
+        '/opt/homebrew/bin/npm',
+        '/usr/bin/npm',
+    ]
+        .filter((candidate): candidate is string => Boolean(candidate))
+        .map(candidate => ({
+            path: candidate.endsWith('.js') ? process.execPath : candidate,
+            args: candidate.endsWith('.js') ? [candidate] : [],
+        }));
+    let npmCommand: { path: string; args: string[] } | undefined;
+    for (const candidate of npmCandidates) {
         try {
-            await access(candidate);
-            npmCliPath = candidate;
+            await access(candidate.path);
+            npmCommand = candidate;
             break;
         } catch {
             // Try the next known npm installation location.
         }
     }
-    if (!npmCliPath) throw new Error('Unable to locate npm');
+    if (!npmCommand) throw new Error('Unable to locate npm');
 
-    const npmCli = npmCliPath;
-    const runNpm = (args: string[]) => execFileAsync(process.execPath, [npmCli, ...args]);
+    const npm = npmCommand;
+    const runNpm = (args: string[]) => execFileAsync(
+        npm.path,
+        [...npm.args, ...args],
+        { env: process.env },
+    );
     await runNpm(['install', '-g', 'windsor-bot@latest']);
     const { stdout } = await runNpm(['root', '-g']);
     const packageJsonPath = join(stdout.trim(), 'windsor-bot', 'package.json');
