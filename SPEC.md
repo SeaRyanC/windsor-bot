@@ -18,9 +18,9 @@ If multiple URLs are in the same message, write `[link 1]`, `[link 2]`, etc, ins
 
 ## Idempotency
 
-The bot does not require or assume 24/7 uptime. On startup you should scan prior messages and see what needs acting on. You only need to look at the last 100 messages per channel (500 for recurrences - assume we do not have more than that); messages older than this can be assumed to already be actioned.
+The bot does not require or assume 24/7 uptime. On startup you should scan prior messages and see what needs acting on. You only need to look at the last 100 messages per channel; messages older than this can be assumed to already be actioned.
 
-For non-recurring items, use **reactions** to indicate that you've complied (e.g. printed or whatever) to a request. Use the ✅ reaction upon successfully fulfilling the request.
+Use **reactions** to indicate that you've complied (e.g. printed or whatever) to a request. Use the ✅ reaction upon successfully fulfilling the request.
 
 If printing fails, react with ⏸️ and post a reply that explains what went wrong. If the
 printer device is unavailable, react with ⏳ instead and retry every 3 seconds until it
@@ -66,55 +66,26 @@ Don't try to deduplicate items.
 Ignore deleted messages in the chat.
 Use the latest version of any edited message.
 
-## Recurring Print Behavior
+## Reusable List Behavior
 
-We need to extract two main things from the user's message:
- * The *message* part
- * The *schedule* part
+Any human reaction to an eligible message triggers one print. After a
+successful print, add the same reaction from the bot, making two matching
+reactions. When the human removes their reaction, remove the bot's matching
+reaction as well. Ignore bot-authored messages and replies.
 
-Use structured output using a zod schema to implement this.
+Print each message at most once, even if multiple human reactions are added.
+On startup, inspect the last 100 messages in each Reusable List channel and
+print messages with human reactions that do not already have a bot reaction.
+Use the latest message content when printing; cancel pending work if the
+message is deleted or the human removes their reaction.
 
-Send the AI a message in this form:
-
-> The user has asked for a recurring printout. It is currently [the current date and time]. Tell me the next time that I should do this, and what the non-schedule part of the message was (verbatim). If the user didn't specify a time of day, use 8:00 AM. Here's the user's message: [the user message]
-
-You'll want to get back a JSON blob like this:
-```json
-{
-    "message without schedule": "take out the trash",
-    "next occurrence": "2025-08-02 07:30 PM"
-}
-```
-Be flexible about date parsing.
-
-Use majority-reasoning method of asking 5 times. You must get 60% consistency in the message portion and 60% consistency in the next occurrence portion (not necessarily from the same responses); if this doesn't happen, treat this as a failure to parse and react appropriately.
-
-React to the message with the standard green checkmark and reply with:
-
-> Got it. I will print ⟪take out the trash⟫ at 2025-08-02 07:30 PM
-
-You'll ingest this message on re-starts to establish what scheduled tasks there are.
-Enqueue a background task that checks for scheduled items maturing (check every 30s).
-
-When a task matures, we'll of course print it as requested.
-When print finishes, react to the reply with the checkmark emoji.
-
-Then we'll return to the AI to ask for what the next occurrence is.
-Note that a task might have finite occurrences, e.g. the user prompt might be "for the next five weeks, remind me at 2 PM to take my medicine on Tuesdays".
-
-So we'll post a reply either like
-
-> This occurrence has expired and no more prints are scheduled
-
-*or*
-
-> Printed at 2025-08-02 07:30 PM. The next print will be at 2025-08-09 07:30 PM.
-
-You can thus interpret the absence of such a reply (but the presence of the checkmark) as meaning the prior run failed to reach the AI server, and needs a retry.
+Use ⏳ while waiting for an unavailable printer and retry every 3 seconds.
+Reusable List does not add ✅ or ❌ reactions, and a non-offline print failure
+leaves the human reaction in place while replying with the error.
 
 ## OpenAI Notes
 
-Use `gpt-5.4-nano`, low reasoning, with structured outputs with zod v4 JSON schema for all tasks.
+Use `gpt-5.4-nano` with low reasoning for AI-generated icons.
 
 Keep a global rolling window of never consuming more than 200,000 tokens during any 24 hour period (something would be EXTREMELY wrong if this happens). If this happens, literally delete the AI key from your config.
 

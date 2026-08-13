@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { getCurrentConfig, loadConfig } from './config.ts';
 import { logEvent, startDiagnosticsServer, setDiscordChannels, setRestartHandler, setRefreshChannelsHandler } from './server.ts';
-import { createWindsorBot, checkScheduledTasks } from './bot.ts';
+import { createWindsorBot } from './bot.ts';
 import { ChannelType } from 'discord.js';
 import type { WindsorConfig } from './types.ts';
 
@@ -45,11 +45,6 @@ export async function restartBot(): Promise<void> {
     const { config } = await loadConfig();
     await startBot(config);
 }
-
-// Recurring task checker
-setInterval(() => {
-    checkScheduledTasks();
-}, 30_000);
 
 setRestartHandler(restartBot);
 

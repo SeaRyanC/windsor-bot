@@ -47,7 +47,6 @@
     "pdfkit": "^0.19.1",
     "preact": "^10.29.7",
     "qrcode": "^1.5.4",
-    "serialport": "^13.0.0",
-    "zod": "^4.4.3"
+    "serialport": "^13.0.0"
   }
 }

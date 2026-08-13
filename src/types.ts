@@ -1,5 +1,8 @@
 
-export type ChannelBehaviorType = 'immediate-print' | 'accumulating-list' | 'recurring-print' | 'on-demand';
+export type ChannelBehaviorType =
+    | 'immediate-print'
+    | 'accumulating-list'
+    | 'on-demand';
 
 export interface ImmediatePrintConfig {
     type: 'immediate-print';
@@ -17,11 +20,10 @@ export interface AccumulatingListConfig {
     includeMetadata: boolean;
 }
 
-export interface RecurringPrintConfig {
-    type: 'recurring-print';
+export interface ReusableListConfig {
+    type: 'reusable-list';
     header?: string;
     footer?: string;
-    includeIcon: boolean;
     includeMetadata: boolean;
 }
 
@@ -32,7 +34,7 @@ export interface OnDemandConfig {
 export type ChannelBehaviorConfig =
     | ImmediatePrintConfig
     | AccumulatingListConfig
-    | RecurringPrintConfig
+    | ReusableListConfig
     | OnDemandConfig;
 
 export interface ChannelMapping {
@@ -117,4 +119,3 @@ export interface CommandContext {
     channelId: string;
     guildId: string;
 }
-

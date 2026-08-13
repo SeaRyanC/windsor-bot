@@ -4,7 +4,7 @@ import type { JSX } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
 
 
-type BehaviorType = 'immediate-print' | 'accumulating-list' | 'recurring-print' | 'on-demand';
+type BehaviorType = 'immediate-print' | 'accumulating-list' | 'reusable-list' | 'on-demand';
 
 interface ChannelBehaviorConfig {
     type: BehaviorType;
@@ -150,7 +150,7 @@ function BehaviorConfig({ config, onChange }: {
     const t = config.type;
     return (
         <div style={{ paddingTop: '12px' }}>
-            {(t === 'immediate-print' || t === 'accumulating-list' || t === 'recurring-print') && (
+            {(t === 'immediate-print' || t === 'accumulating-list' || t === 'reusable-list') && (
                 <>
                     <Field
                         label="Header"
@@ -171,7 +171,7 @@ function BehaviorConfig({ config, onChange }: {
                     />
                 </>
             )}
-            {(t === 'immediate-print' || t === 'recurring-print') && (
+            {t === 'immediate-print' && (
                 <CheckField
                     label="Include AI-generated icon (requires OpenAI key)"
                     checked={config.includeIcon ?? false}
@@ -313,9 +313,9 @@ function ChannelBehaviors({ refreshKey }: { refreshKey?: number }): JSX.Element 
             ? { type: 'immediate-print', includeIcon: false, includeMetadata: false }
             : addBehavior === 'accumulating-list'
                 ? { type: 'accumulating-list', includeChecklist: false, includeMetadata: false }
-                : addBehavior === 'recurring-print'
-                    ? { type: 'recurring-print', includeIcon: false, includeMetadata: false }
-                    : { type: 'on-demand' };
+                : addBehavior === 'reusable-list'
+                    ? { type: 'reusable-list', includeMetadata: false }
+                : { type: 'on-demand' };
         await jsonPost('/api/channels', { channelId: dc.id, channelName: dc.name, config: defaultConfig });
         setAddChannelId('');
         await load();
@@ -383,7 +383,7 @@ function ChannelBehaviors({ refreshKey }: { refreshKey?: number }): JSX.Element 
                     <select style={S.select} value={addBehavior} onChange={e => setAddBehavior((e.currentTarget as HTMLSelectElement).value as BehaviorType)}>
                         <option value="immediate-print">🖨️ Immediate Print</option>
                         <option value="accumulating-list">🛒 Accumulating List</option>
-                        <option value="recurring-print">🔄 Recurring Print</option>
+                        <option value="reusable-list">🔁 Reusable List</option>
                         <option value="on-demand">💬 On-Demand</option>
                     </select>
                 </label>

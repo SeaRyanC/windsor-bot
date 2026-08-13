@@ -2,12 +2,16 @@ import {
     ChannelType,
     Client,
     GatewayIntentBits,
+    Partials,
     type Guild,
     type Message,
     type MessageReaction,
+    type PartialMessageReaction,
+    type PartialUser,
     type TextChannel,
+    type User,
 } from 'discord.js';
-import { formatScheduleDate, generateIcon, getNextOccurrence, parseRecurringSchedule } from './ai.ts';
+import { generateIcon, isIconCached } from './ai.ts';
 import { Commands } from './commands/index.ts';
 import { getCurrentConfig, reconcileChannels } from './config.ts';
 import { formatTimestamp } from './printer.ts';
@@ -18,7 +22,7 @@ import type {
     ChannelBehaviorConfig,
     ImmediatePrintConfig,
     PrintJob,
-    RecurringPrintConfig,
+    ReusableListConfig,
 } from './types.ts';
 import { Reaction } from './reactions.ts';
 
@@ -45,9 +49,16 @@ export function extractUrls(text: string): string[] {
     }
     return result;
 }
-
 export function stripUrls(text: string): string {
     return text.replace(URL_REGEX, '').replace(/\s+/g, ' ').trim();
+}
+
+async function removeOwnReactionSafe(reaction: MessageReaction): Promise<void> {
+    try {
+        if (reaction.me) await reaction.users.remove();
+    } catch {
+        // ignore
+    }
 }
 
 export function replaceUrlsInText(text: string, urls: string[]): string {
@@ -101,10 +112,10 @@ async function removeReactionSafe(message: Message, emoji: Reaction): Promise<vo
     }
 }
 
-async function reactSafe(message: Message, emoji: Reaction): Promise<void> {
+async function reactSafe(message: Message, emoji: Reaction, clearThinking = true): Promise<void> {
     try {
         await message.react(emoji);
-        if (emoji !== Reaction.thinking) {
+        if (emoji !== Reaction.thinking && clearThinking) {
             await removeReactionSafe(message, Reaction.thinking);
         }
         if (emoji === Reaction.ok) {
@@ -153,15 +164,13 @@ export interface WindsorBotHandle {
     getClient(): Client;
     handleImmediatePrint(message: Message, config: ImmediatePrintConfig, retryFailed?: boolean): Promise<void>;
     handleAccumulatingPrint(triggerMessage: Message, config: AccumulatingListConfig, allMessages: Message[]): Promise<void>;
-    handleRecurringSetup(message: Message, config: RecurringPrintConfig): Promise<void>;
-    executeRecurringTask(scheduleReply: Message, config: RecurringPrintConfig): Promise<void>;
-    advanceRecurring(scheduleReply: Message, latestStatusReply: Message, config: RecurringPrintConfig): Promise<void>;
     handleOnDemand(message: Message): Promise<void>;
 }
 
 
 export function createWindsorBot(): WindsorBotHandle {
     const client = new Client({
+        partials: [Partials.Message, Partials.Reaction, Partials.User],
         intents: [
             GatewayIntentBits.Guilds,
             GatewayIntentBits.GuildMessages,
@@ -171,10 +180,17 @@ export function createWindsorBot(): WindsorBotHandle {
     });
     const pendingPrints = new Map<string, { message: Message; retry: () => Promise<void> }>();
     const processingPending = new Set<string>();
+    const reusableStates = new Map<string, {
+        reaction: MessageReaction;
+        cancelled: boolean;
+        status: 'printing' | 'pending' | 'printed';
+    }>();
     let pendingPoller: ReturnType<typeof setInterval> | null = null;
 
     client.on('clientReady', () => void onReady());
     client.on('messageCreate', (msg) => void onMessage(msg));
+    client.on('messageReactionAdd', (reaction, user) => void onReactionAdd(reaction, user));
+    client.on('messageReactionRemove', (reaction, user) => void onReactionRemove(reaction, user));
 
     const bot: WindsorBotHandle = {
         start,
@@ -182,9 +198,6 @@ export function createWindsorBot(): WindsorBotHandle {
         getClient,
         handleImmediatePrint,
         handleAccumulatingPrint,
-        handleRecurringSetup,
-        executeRecurringTask,
-        advanceRecurring,
         handleOnDemand,
     };
 
@@ -202,6 +215,76 @@ export function createWindsorBot(): WindsorBotHandle {
 
     function getClient(): Client {
         return client;
+    }
+
+    function getReusableConfig(message: Message): ReusableListConfig | null {
+        const config = getCurrentConfig();
+        const mapping = config.channels.find(m => m.channelId === message.channelId);
+        if (!mapping || mapping.config.type !== 'reusable-list') return null;
+        if (config.serverId && message.guildId !== config.serverId) return null;
+        if (message.author.bot || message.reference) return null;
+        return mapping.config;
+    }
+
+    async function hydrateReaction(
+        reaction: MessageReaction | PartialMessageReaction,
+    ): Promise<{ reaction: MessageReaction; message: Message }> {
+        const fullReaction = reaction.partial ? await reaction.fetch() : reaction;
+        if (fullReaction.message.partial) await fullReaction.message.fetch();
+        return { reaction: fullReaction, message: fullReaction.message as Message };
+    }
+
+    async function findStartupReusableReaction(message: Message): Promise<MessageReaction | null> {
+        if ([...message.reactions.cache.values()].some(reaction => reaction.me)) return null;
+        for (const reaction of message.reactions.cache.values()) {
+            const users = await reaction.users.fetch();
+            if ([...users.values()].some(user => !user.bot)) return reaction;
+        }
+        return null;
+    }
+
+    async function onReactionAdd(
+        reactionEvent: MessageReaction | PartialMessageReaction,
+        user: User | PartialUser,
+    ): Promise<void> {
+        if (user.bot) return;
+
+        try {
+            const { reaction, message } = await hydrateReaction(reactionEvent);
+            const config = getReusableConfig(message);
+            if (!config) return;
+            if ([...message.reactions.cache.values()].some(candidate => candidate.me)) return;
+            if (reusableStates.has(message.id)) return;
+
+            const state = { reaction, cancelled: false, status: 'printing' as const };
+            reusableStates.set(message.id, state);
+            await handleReusablePrint(message, config, state);
+        } catch (err) {
+            logEvent('error', `Reusable List reaction handling failed: ${err}`);
+        }
+    }
+
+    async function onReactionRemove(
+        reactionEvent: MessageReaction | PartialMessageReaction,
+        user: User | PartialUser,
+    ): Promise<void> {
+        if (user.bot) return;
+
+        try {
+            const { reaction, message } = await hydrateReaction(reactionEvent);
+            if (!getReusableConfig(message)) return;
+
+            const state = reusableStates.get(message.id);
+            if (state) {
+                state.cancelled = true;
+                pendingPrints.delete(message.id);
+                await removeReactionSafe(message, Reaction.waiting);
+                if (state.status !== 'printing') reusableStates.delete(message.id);
+            }
+            await removeOwnReactionSafe(reaction);
+        } catch (err) {
+            logEvent('error', `Reusable List reaction removal failed: ${err}`);
+        }
     }
 
     function isTextOnlyChannel(ch: { isTextBased(): boolean; type: ChannelType }): boolean {
@@ -288,17 +371,7 @@ export function createWindsorBot(): WindsorBotHandle {
                 if (!mapping) continue;
 
                 try {
-                    let fetchedMessages;
-                    if (mapping.config.type === 'recurring-print') {
-                        const page1 = await textCh.messages.fetch({ limit: 100 });
-                        const oldest = [...page1.values()].reduce((a, b) =>
-                            BigInt(a.id) < BigInt(b.id) ? a : b
-                        );
-                        const page2 = await textCh.messages.fetch({ limit: 100, before: oldest.id });
-                        fetchedMessages = new Map([...page1, ...page2]);
-                    } else {
-                        fetchedMessages = await textCh.messages.fetch({ limit: 100 });
-                    }
+                    const fetchedMessages = await textCh.messages.fetch({ limit: 100 });
                     const sorted = [...fetchedMessages.values()].sort((a, b) =>
                         Number(BigInt(a.id) - BigInt(b.id))
                     );
@@ -352,8 +425,15 @@ export function createWindsorBot(): WindsorBotHandle {
                 }
                 break;
             }
-            case 'recurring-print': {
-                await startupRecurring(channel, config, messages);
+            case 'reusable-list': {
+                for (const msg of messages) {
+                    if (msg.author.bot || msg.reference || msg.author.id === botId) continue;
+                    const reaction = await findStartupReusableReaction(msg);
+                    if (!reaction || reusableStates.has(msg.id)) continue;
+                    const state = { reaction, cancelled: false, status: 'printing' as const };
+                    reusableStates.set(msg.id, state);
+                    await handleReusablePrint(msg, config, state);
+                }
                 break;
             }
             case 'on-demand': {
@@ -369,47 +449,6 @@ export function createWindsorBot(): WindsorBotHandle {
                     await handleOnDemand(msg);
                 }
                 break;
-            }
-        }
-    }
-
-    async function startupRecurring(
-        channel: TextChannel,
-        config: RecurringPrintConfig,
-        messages: Message[],
-    ): Promise<void> {
-        const botId = client.user?.id;
-        const scheduleReplies = messages.filter(m =>
-            m.author.id === botId && m.content.startsWith('Got it. I will print ⟪')
-        );
-
-        for (const scheduleReply of scheduleReplies) {
-            const parentId = scheduleReply.reference?.messageId;
-            if (!parentId) continue;
-
-            const statusReplies = messages.filter(m =>
-                m.author.id === botId &&
-                m.reference?.messageId === scheduleReply.id &&
-                (m.content.startsWith('Printed at') || m.content.includes('has expired'))
-            );
-
-            const latestStatus = statusReplies[statusReplies.length - 1];
-
-            if (latestStatus?.content.includes('has expired')) {
-                continue;
-            }
-
-            if (latestStatus && latestStatus.content.startsWith('Printed at') && !await hasReaction(latestStatus, Reaction.ok)) {
-                await advanceRecurring(scheduleReply, latestStatus, config);
-                continue;
-            }
-
-            if (!latestStatus) {
-                const match = /at (.+)$/.exec(scheduleReply.content);
-                if (!match?.[1]) continue;
-                const nextTime = new Date(match[1]);
-                if (isNaN(nextTime.getTime())) continue;
-                scheduleRecurringTask(scheduleReply, nextTime, config, bot);
             }
         }
     }
@@ -445,8 +484,7 @@ export function createWindsorBot(): WindsorBotHandle {
                 }
                 break;
             }
-            case 'recurring-print':
-                await handleRecurringSetup(message, mapping.config);
+            case 'reusable-list':
                 break;
             case 'on-demand':
                 await handleOnDemand(message);
@@ -483,9 +521,11 @@ export function createWindsorBot(): WindsorBotHandle {
             ];
         }
 
+        let thinkingReacted = false;
         if (config.includeIcon) {
-            await reactSafe(message, Reaction.thinking);
             const iconCacheDir = getCurrentConfig().iconCacheDir ?? './icon-cache';
+            thinkingReacted = !await isIconCached(strippedText, iconCacheDir);
+            if (thinkingReacted) await reactSafe(message, Reaction.thinking);
             const iconPath = await generateIcon(strippedText, iconCacheDir);
             if (iconPath) job.iconPath = iconPath;
         }
@@ -494,7 +534,7 @@ export function createWindsorBot(): WindsorBotHandle {
         if (await hasAnyReaction(message)) {
             const waiting = message.reactions.cache.get(Reaction.waiting)?.me;
             if (!retryPending && (!retryFailed || !message.reactions.cache.get(Reaction.fail)?.me)) {
-                await removeReactionSafe(message, Reaction.thinking);
+                if (thinkingReacted) await removeReactionSafe(message, Reaction.thinking);
                 return;
             }
             if (retryPending && !waiting) return;
@@ -503,20 +543,20 @@ export function createWindsorBot(): WindsorBotHandle {
         try {
             await printJob(job);
             pendingPrints.delete(message.id);
-            await reactSafe(message, Reaction.ok);
+            await reactSafe(message, Reaction.ok, thinkingReacted);
             logEvent('print', `Printed immediate message from ${message.author.username}`);
         } catch (err) {
             if (isPrinterUnavailableError(err)) {
-                await reactSafe(message, Reaction.waiting);
+                await reactSafe(message, Reaction.waiting, thinkingReacted);
                 enqueuePendingPrint(message, () => handleImmediatePrint(message, config, false, true));
                 logEvent('info', `Printer unavailable for immediate message from ${message.author.username}`);
                 return;
             }
-            await reactSafe(message, Reaction.fail);
+            await reactSafe(message, Reaction.fail, thinkingReacted);
             await replySafe(message, `⏸️ Print failed: ${err instanceof Error ? err.message : String(err)}`);
             logEvent('error', `Print failed: ${err}`);
         }
-        await removeReactionSafe(message, Reaction.thinking);
+        if (thinkingReacted) await removeReactionSafe(message, Reaction.thinking);
     }
 
     async function handleAccumulatingPrint(
@@ -610,115 +650,78 @@ export function createWindsorBot(): WindsorBotHandle {
         }
     }
 
-    async function handleRecurringSetup(message: Message, config: RecurringPrintConfig): Promise<void> {
-        const rawContent = message.content;
-
-        try {
-            const parsed = await parseRecurringSchedule(rawContent, new Date());
-            if (!parsed) {
-                await reactSafe(message, Reaction.what);
-                await replySafe(message, '⁉️ Could not parse a schedule from your message. Please try again with a clearer schedule.');
-                return;
-            }
-
-            const nextStr = formatScheduleDate(parsed.nextOccurrence);
-            await reactSafe(message, Reaction.ok);
-            const reply = await replySafe(message, `Got it. I will print ⟪${parsed.message}⟫ at ${nextStr}`);
-
-            if (reply) {
-                scheduleRecurringTask(reply, parsed.nextOccurrence, config, bot);
-            }
-        } catch (err) {
-            await reactSafe(message, Reaction.fail);
-            await replySafe(message, `⁉️ Failed to parse schedule: ${err instanceof Error ? err.message : String(err)}`);
-        }
-    }
-
-    async function executeRecurringTask(
-        scheduleReply: Message,
-        config: RecurringPrintConfig,
+    async function handleReusablePrint(
+        message: Message,
+        config: ReusableListConfig,
+        state: { reaction: MessageReaction; cancelled: boolean; status: 'printing' | 'pending' | 'printed' },
     ): Promise<void> {
-        const match = /⟪(.+?)⟫/.exec(scheduleReply.content);
-        if (!match?.[1]) return;
-        const text = match[1];
-
-        const urls = extractUrls(text);
-        const textWithLinks = replaceUrlsInText(text, urls);
-        const strippedText = stripUrls(text);
-
-        const job: PrintJob = {
-            lines: [textWithLinks],
-            urls,
-        };
-        if (config.header) job.header = config.header;
-        if (config.footer) job.footer = config.footer;
-        if (config.includeMetadata) {
-            job.metadataLines = [`Recurring · ${formatTimestamp(new Date())}`];
-        }
-        if (config.includeIcon) {
-            const iconCacheDir = getCurrentConfig().iconCacheDir ?? './icon-cache';
-            const iconPath = await generateIcon(strippedText, iconCacheDir);
-            if (iconPath) job.iconPath = iconPath;
-        }
-
-        await refreshMessage(scheduleReply);
-        if (await hasAnyReaction(scheduleReply)) {
-            await removeReactionSafe(scheduleReply, Reaction.thinking);
+        if (state.cancelled) {
+            reusableStates.delete(message.id);
             return;
         }
 
-        const printedAt = formatTimestamp(new Date());
+        try {
+            await message.fetch();
+        } catch (err) {
+            reusableStates.delete(message.id);
+            pendingPrints.delete(message.id);
+            logEvent('info', `Cancelled reusable print for unavailable message ${message.id}: ${err}`);
+            return;
+        }
+
+        const rawContent = message.content;
+        const urls = extractUrls(rawContent);
+        const text = replaceUrlsInText(rawContent, urls);
+        const strippedText = stripUrls(rawContent);
+
+        if (strippedText.length > MAX_MESSAGE_CHARS) {
+            reusableStates.delete(message.id);
+            await removeReactionSafe(message, Reaction.waiting);
+            await replySafe(message, '⁉️ This message is too long to print.');
+            return;
+        }
+
+        const job: PrintJob = { lines: [text], urls };
+        if (config.header) job.header = config.header;
+        if (config.footer) job.footer = config.footer;
+        if (config.includeMetadata) {
+            job.metadataLines = [
+                `${message.author.username} · ${formatTimestamp(message.createdAt)}`,
+            ];
+        }
+
+        if (state.cancelled) {
+            reusableStates.delete(message.id);
+            return;
+        }
 
         try {
             await printJob(job);
         } catch (err) {
-            await removeReactionSafe(scheduleReply, Reaction.thinking);
-            logEvent('error', `Recurring print failed: ${err}`);
+            if (isPrinterUnavailableError(err)) {
+                state.status = 'pending';
+                await reactSafe(message, Reaction.waiting);
+                enqueuePendingPrint(message, () => handleReusablePrint(message, config, state));
+                logEvent('info', `Printer unavailable for reusable message in #${message.channelId}`);
+                return;
+            }
+            reusableStates.delete(message.id);
+            await removeReactionSafe(message, Reaction.waiting);
+            await replySafe(message, `⏸️ Print failed: ${err instanceof Error ? err.message : String(err)}`);
+            logEvent('error', `Reusable List print failed: ${err}`);
             return;
         }
 
-        logEvent('print', `Printed recurring task: ${text}`);
-
-        const originalUserMessage = scheduleReply.content.replace(/^Got it\. I will print ⟪.+?⟫ at /, '');
-        const nextOccurrence = await getNextOccurrence(originalUserMessage, new Date());
-
-        let statusReply: Message | null;
-        if (!nextOccurrence) {
-            statusReply = await replySafe(scheduleReply, 'This occurrence has expired and no more prints are scheduled');
-        } else {
-            const nextStr = formatScheduleDate(nextOccurrence);
-            statusReply = await replySafe(scheduleReply, `Printed at ${printedAt}. The next print will be at ${nextStr}.`);
-        }
-
-        if (statusReply) {
-            await reactSafe(statusReply, Reaction.ok);
-        }
-        await removeReactionSafe(scheduleReply, Reaction.thinking);
-
-        if (nextOccurrence && statusReply) {
-            scheduleRecurringTask(scheduleReply, nextOccurrence, config, bot);
-        }
-    }
-
-    async function advanceRecurring(
-        scheduleReply: Message,
-        latestStatusReply: Message,
-        config: RecurringPrintConfig,
-    ): Promise<void> {
-        const match = /⟪(.+?)⟫/.exec(scheduleReply.content);
-        if (!match?.[1]) return;
-
-        const nextOccurrence = await getNextOccurrence(match[1], new Date());
-        if (!nextOccurrence) {
-            await replySafe(latestStatusReply, 'This occurrence has expired and no more prints are scheduled');
-            await removeReactionSafe(latestStatusReply, Reaction.thinking);
+        pendingPrints.delete(message.id);
+        await removeReactionSafe(message, Reaction.waiting);
+        if (state.cancelled) {
+            reusableStates.delete(message.id);
             return;
         }
 
-        const nextStr = formatScheduleDate(nextOccurrence);
-        await replySafe(latestStatusReply, `The next print will be at ${nextStr}.`);
-        await reactSafe(latestStatusReply, Reaction.ok);
-        scheduleRecurringTask(scheduleReply, nextOccurrence, config, bot);
+        await message.react(state.reaction.emoji);
+        state.status = 'printed';
+        logEvent('print', `Printed reusable message from ${message.author.username}`);
     }
 
     async function retryFailedMessages(message: Message): Promise<number> {
@@ -790,45 +793,4 @@ export function createWindsorBot(): WindsorBotHandle {
     }
 
     return bot;
-}
-
-
-interface ScheduledTask {
-    scheduleReply: Message;
-    nextOccurrence: Date;
-    config: RecurringPrintConfig;
-    bot: WindsorBotHandle;
-    timerId: ReturnType<typeof setTimeout>;
-}
-
-const scheduledTasks = new Map<string, ScheduledTask>();
-
-export function scheduleRecurringTask(
-    scheduleReply: Message,
-    nextOccurrence: Date,
-    config: RecurringPrintConfig,
-    bot: WindsorBotHandle,
-): void {
-    const key = scheduleReply.id;
-    const existing = scheduledTasks.get(key);
-    if (existing) clearTimeout(existing.timerId);
-
-    const delay = Math.max(0, nextOccurrence.getTime() - Date.now());
-    const timerId = setTimeout(() => {
-        scheduledTasks.delete(key);
-        void bot.executeRecurringTask(scheduleReply, config);
-    }, delay);
-
-    scheduledTasks.set(key, { scheduleReply, nextOccurrence, config, bot, timerId });
-}
-
-export function checkScheduledTasks(): void {
-    const now = new Date();
-    for (const [key, task] of scheduledTasks) {
-        if (task.nextOccurrence <= now) {
-            clearTimeout(task.timerId);
-            scheduledTasks.delete(key);
-            void task.bot.executeRecurringTask(task.scheduleReply, task.config);
-        }
-    }
 }
