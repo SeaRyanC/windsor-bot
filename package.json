@@ -1,6 +1,6 @@
 {
   "name": "windsor-bot",
-  "version": "0.1.17",
+  "version": "0.2.0",
   "description": "Self-hosted Discord bot automation for household list and todo printing",
   "type": "module",
   "main": "dist/index.js",
