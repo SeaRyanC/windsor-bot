@@ -114,7 +114,10 @@ async function removeReactionSafe(message: Message, emoji: Reaction): Promise<vo
 
 async function reactSafe(message: Message, emoji: Reaction, clearThinking = true): Promise<void> {
     try {
-        await message.react(emoji);
+        // Retries can encounter the same pending reaction repeatedly while offline.
+        if (!message.reactions.cache.get(emoji)?.me) {
+            await message.react(emoji);
+        }
         if (emoji !== Reaction.thinking && clearThinking) {
             await removeReactionSafe(message, Reaction.thinking);
         }
