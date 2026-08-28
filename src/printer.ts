@@ -63,12 +63,7 @@ function chooseFontForLines(totalLines: number): { fontSize: string; charsPerLin
 }
 
 function countLayoutLines(lines: string[]): number {
-    const longestLine = lines.reduce((max, line) => Math.max(max, line.length), 0);
-    return longestLine > CHARS_DOUBLE
-        ? 9
-        : lines.length <= 2
-            ? 2
-            : lines.length;
+    return lines.length <= 2 ? 2 : lines.length;
 }
 
 

@@ -39,12 +39,7 @@ function chooseLineHeight(totalLines: number): { lineHeight: number; fontPath: s
 }
 
 function countLayoutLines(lines: string[]): number {
-    const longestLine = lines.reduce((max, line) => Math.max(max, line.length), 0);
-    return longestLine > 24
-        ? 9
-        : lines.length <= 2
-            ? 2
-            : lines.length;
+    return lines.length <= 2 ? 2 : lines.length;
 }
 
 function wrapText(text: string, font: Awaited<ReturnType<typeof loadFont>>, maxWidth: number): string[] {
