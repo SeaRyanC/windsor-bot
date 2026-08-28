@@ -124,12 +124,22 @@ async function updateGlobalBot(): Promise<string> {
 
     let npmCommand: { path: string; args: string[] } | undefined;
     for (const candidate of npmCandidates) {
-        const command = candidate.endsWith('.js')
-            ? { path: process.execPath, args: [candidate] }
-            : { path: candidate, args: [] };
+        const nvmBin = candidate.match(/(\/\.nvm\/versions\/node\/[^/]+\/bin)\/npm$/)?.[1];
+        const command = nvmBin
+            ? {
+                path: join(nvmBin, 'node'),
+                args: [join(nvmBin, '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js')],
+            }
+            : candidate.endsWith('.js')
+                ? { path: process.execPath, args: [candidate] }
+                : { path: candidate, args: [] };
         try {
             // Validate the script itself, not just the Node executable used to run it.
             await access(candidate, constants.R_OK | (candidate.endsWith('.js') ? 0 : constants.X_OK));
+            if (nvmBin) {
+                await access(command.path, constants.X_OK);
+                await access(command.args[0]!, constants.R_OK);
+            }
             npmCommand = command;
             logEvent('info', `Using npm candidate ${candidate}${command.args.length > 0 ? ` via ${command.path}` : ''}`);
             break;
@@ -145,11 +155,15 @@ async function updateGlobalBot(): Promise<string> {
     }
 
     const npm = npmCommand;
+    const nvmPrefix = npm.path.match(/(\/\.nvm\/versions\/node\/[^/]+)\/bin\/node$/)?.[1];
+    const npmEnv = nvmPrefix
+        ? { ...process.env, NPM_CONFIG_PREFIX: nvmPrefix }
+        : process.env;
     const runNpm = async (args: string[]) => {
         const commandArgs = [...npm.args, ...args];
         logEvent('info', `Running npm: ${npm.path} ${commandArgs.join(' ')}`);
         try {
-            const result = await execFileAsync(npm.path, commandArgs, { env: process.env });
+            const result = await execFileAsync(npm.path, commandArgs, { env: npmEnv });
             logEvent('info', `npm completed successfully: ${args.join(' ')}`);
             return result;
         } catch (error) {
