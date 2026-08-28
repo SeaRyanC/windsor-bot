@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'http';
 import { execFile } from 'child_process';
 import { build } from 'esbuild';
-import { access, constants, readFile, stat } from 'fs/promises';
+import { access, constants, readFile, readdir, stat } from 'fs/promises';
 import { promisify } from 'util';
 import { spawn } from 'child_process';
 import { dirname, join } from 'path';
@@ -83,6 +83,7 @@ async function readPackageVersion(): Promise<string> {
 async function updateGlobalBot(): Promise<string> {
     const configuredCandidates = [
         process.env['npm_execpath'],
+        process.env['NVM_BIN'] ? join(process.env['NVM_BIN'], 'npm') : undefined,
         join(dirname(process.execPath), '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
         join(dirname(process.execPath), 'npm'),
         '/usr/local/lib/node_modules/npm/bin/npm-cli.js',
@@ -96,11 +97,27 @@ async function updateGlobalBot(): Promise<string> {
         .filter((candidate): candidate is string => Boolean(candidate))
         .map(candidate => candidate.trim())
         .filter((candidate, index, candidates) => candidates.indexOf(candidate) === index);
+    const nvmDir = process.env['NVM_DIR'] ?? (
+        process.env['HOME'] ? join(process.env['HOME'], '.nvm') : undefined
+    );
+    const nvmCandidates: string[] = [];
+    if (nvmDir) {
+        try {
+            const nodeVersions = await readdir(join(nvmDir, 'versions', 'node'), { withFileTypes: true });
+            for (const version of nodeVersions) {
+                if (version.isDirectory()) nvmCandidates.push(join(nvmDir, 'versions', 'node', version.name, 'bin', 'npm'));
+            }
+            logEvent('info', `Found ${nvmCandidates.length} nvm npm candidate(s) under ${nvmDir}`);
+        } catch (error) {
+            const code = error instanceof Error && 'code' in error ? String(error.code) : 'unknown';
+            logEvent('info', `Unable to inspect nvm npm locations under ${nvmDir} (${code})`);
+        }
+    }
     const pathCandidates = (process.env['PATH'] ?? '')
         .split(':')
         .filter(Boolean)
         .map(directory => join(directory, 'npm'));
-    const npmCandidates = [...configuredCandidates, ...pathCandidates]
+    const npmCandidates = [...configuredCandidates, ...nvmCandidates, ...pathCandidates]
         .filter((candidate, index, candidates) => candidates.indexOf(candidate) === index);
 
     logEvent('info', `Update requested; checking ${npmCandidates.length} npm candidate(s) (node=${process.execPath}, cwd=${process.cwd()})`);
