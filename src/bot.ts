@@ -521,6 +521,7 @@ export function createWindsorBot(): WindsorBotHandle {
 
         const job: PrintJob = {
             lines: [textWithLinkLabels],
+            fontSize: 'double',
             urls,
         };
 
@@ -692,7 +693,7 @@ export function createWindsorBot(): WindsorBotHandle {
             return;
         }
 
-        const job: PrintJob = { lines: [text], urls };
+        const job: PrintJob = { lines: [text], fontSize: 'double', urls };
         if (config.header) job.header = config.header;
         if (config.footer) job.footer = config.footer;
         if (config.includeMetadata) {

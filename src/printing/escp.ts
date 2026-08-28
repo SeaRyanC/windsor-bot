@@ -26,28 +26,13 @@ function wrapText(text: string, width: number): string[] {
 }
 
 
-type FontSize = 'double' | 'tall' | 'normal';
-
-function chooseFontForLines(totalLines: number): { fontSize: FontSize; cols: number } {
-    if (totalLines <= 8) {
-        return { fontSize: 'tall', cols: COLS_NORMAL };
-    } else {
-        return { fontSize: 'normal', cols: COLS_NORMAL };
-    }
-}
-
-function countLayoutLines(lines: string[]): number {
-    return lines.length <= 2 ? 2 : lines.length;
-}
-
-
 export async function buildEscpBuffer(job: PrintJob): Promise<Buffer> {
     const conn = new InMemory();
     const printer = await Printer.CONNECT('TM-T20', conn);
     // Reset state that may persist between direct USB/serial jobs.
     await conn.write(Buffer.from(PRINTER_INIT, 'ascii'));
 
-    const { fontSize, cols } = chooseFontForLines(countLayoutLines(job.lines));
+    const fontSize = job.fontSize ?? 'normal';
 
     // Header
     if (job.header) {
@@ -84,10 +69,7 @@ export async function buildEscpBuffer(job: PrintJob): Promise<Buffer> {
                 : 0;
 
         for (const line of job.lines) {
-            const wrapped = wrapText(line, cols);
-            for (const l of wrapped) {
-                await printer.writeln(l, widthStyle);
-            }
+            await printer.writeln(line, widthStyle);
         }
         await printer.feed(1);
     }

@@ -104,6 +104,7 @@ export interface BotStatus {
 export interface PrintJob {
     header?: string;
     lines: string[];
+    fontSize?: 'normal' | 'tall' | 'double';
     iconPath?: string;
     urls: string[];
     footer?: string;
