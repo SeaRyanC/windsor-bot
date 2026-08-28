@@ -8,6 +8,7 @@
     "prepare": "npm run build",
     "build": "tsc && node scripts/build-web.mjs",
     "clean": "node scripts/clean.mjs",
+    "deploy": "git push origin 'refs/tags/v*:refs/tags/v*'",
     "dev": "node src/index.ts",
     "test": "node --test src/tests/*.test.ts",
     "generate-wordsearches": "node scripts/generate-wordsearches.mjs",
