@@ -5,6 +5,7 @@ import type { PrintJob } from '../types.ts';
 
 const COLS_NORMAL = 48;
 const COLS_DOUBLE = 24;
+const PRINTER_INIT = '\x1B@\x1Bt\x02\x1BM\x00\x1DL\x00\x00\x1DW\x00\x02';
 
 function wrapText(text: string, width: number): string[] {
     const words = text.split(' ');
@@ -28,8 +29,6 @@ function wrapText(text: string, width: number): string[] {
 type FontSize = 'double' | 'tall' | 'normal';
 
 function chooseFontForLines(totalLines: number): { fontSize: FontSize; cols: number } {
-    // Keep short messages large without relying on the printer's
-    // double-width glyph capacity, which varies by model and font.
     if (totalLines <= 8) {
         return { fontSize: 'tall', cols: COLS_NORMAL };
     } else {
@@ -45,6 +44,8 @@ function countLayoutLines(lines: string[]): number {
 export async function buildEscpBuffer(job: PrintJob): Promise<Buffer> {
     const conn = new InMemory();
     const printer = await Printer.CONNECT('TM-T20', conn);
+    // Reset state that may persist between direct USB/serial jobs.
+    await conn.write(Buffer.from(PRINTER_INIT, 'ascii'));
 
     const { fontSize, cols } = chooseFontForLines(countLayoutLines(job.lines));
 
