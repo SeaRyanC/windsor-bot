@@ -105,7 +105,11 @@ async function updateGlobalBot(): Promise<string> {
         try {
             const nodeVersions = await readdir(join(nvmDir, 'versions', 'node'), { withFileTypes: true });
             for (const version of nodeVersions) {
-                if (version.isDirectory()) nvmCandidates.push(join(nvmDir, 'versions', 'node', version.name, 'bin', 'npm'));
+                if (version.isDirectory()) {
+                    const versionRoot = join(nvmDir, 'versions', 'node', version.name);
+                    nvmCandidates.push(join(versionRoot, 'bin', 'npm'));
+                    nvmCandidates.push(join(versionRoot, 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'));
+                }
             }
             logEvent('info', `Found ${nvmCandidates.length} nvm npm candidate(s) under ${nvmDir}`);
         } catch (error) {
@@ -124,11 +128,11 @@ async function updateGlobalBot(): Promise<string> {
 
     let npmCommand: { path: string; args: string[] } | undefined;
     for (const candidate of npmCandidates) {
-        const nvmBin = candidate.match(/(\/\.nvm\/versions\/node\/[^/]+\/bin)\/npm$/)?.[1];
-        const command = nvmBin
+        const nvmRoot = candidate.match(/(\/\.nvm\/versions\/node\/[^/]+)(?:\/bin\/npm|\/lib\/node_modules\/npm\/bin\/npm-cli\.js)$/)?.[1];
+        const command = nvmRoot
             ? {
-                path: join(nvmBin, 'node'),
-                args: [join(nvmBin, '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js')],
+                path: join(nvmRoot, 'bin', 'node'),
+                args: [join(nvmRoot, 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js')],
             }
             : candidate.endsWith('.js')
                 ? { path: process.execPath, args: [candidate] }
@@ -136,7 +140,7 @@ async function updateGlobalBot(): Promise<string> {
         try {
             // Validate the script itself, not just the Node executable used to run it.
             await access(candidate, constants.R_OK | (candidate.endsWith('.js') ? 0 : constants.X_OK));
-            if (nvmBin) {
+            if (nvmRoot) {
                 await access(command.path, constants.X_OK);
                 await access(command.args[0]!, constants.R_OK);
             }
