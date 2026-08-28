@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'http';
 import { execFile } from 'child_process';
 import { build } from 'esbuild';
-import { access, readFile, stat } from 'fs/promises';
+import { access, constants, readFile, stat } from 'fs/promises';
 import { promisify } from 'util';
 import { spawn } from 'child_process';
 import { dirname, join } from 'path';
@@ -81,7 +81,7 @@ async function readPackageVersion(): Promise<string> {
 }
 
 async function updateGlobalBot(): Promise<string> {
-    const npmCandidates = [
+    const configuredCandidates = [
         process.env['npm_execpath'],
         join(dirname(process.execPath), '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
         join(dirname(process.execPath), 'npm'),
@@ -92,11 +92,19 @@ async function updateGlobalBot(): Promise<string> {
         '/usr/local/bin/npm',
         '/opt/homebrew/bin/npm',
         '/usr/bin/npm',
-        'npm',
     ]
         .filter((candidate): candidate is string => Boolean(candidate))
         .map(candidate => candidate.trim())
         .filter((candidate, index, candidates) => candidates.indexOf(candidate) === index);
+    const pathCandidates = (process.env['PATH'] ?? '')
+        .split(':')
+        .filter(Boolean)
+        .map(directory => join(directory, 'npm'));
+    const npmCandidates = [...configuredCandidates, ...pathCandidates]
+        .filter((candidate, index, candidates) => candidates.indexOf(candidate) === index);
+
+    logEvent('info', `Update requested; checking ${npmCandidates.length} npm candidate(s) (node=${process.execPath}, cwd=${process.cwd()})`);
+
     let npmCommand: { path: string; args: string[] } | undefined;
     for (const candidate of npmCandidates) {
         const command = candidate.endsWith('.js')
@@ -104,21 +112,39 @@ async function updateGlobalBot(): Promise<string> {
             : { path: candidate, args: [] };
         try {
             // Validate the script itself, not just the Node executable used to run it.
-            if (candidate !== 'npm') await access(candidate);
+            await access(candidate, constants.R_OK | (candidate.endsWith('.js') ? 0 : constants.X_OK));
             npmCommand = command;
+            logEvent('info', `Using npm candidate ${candidate}${command.args.length > 0 ? ` via ${command.path}` : ''}`);
             break;
-        } catch {
-            // Try the next known npm installation location.
+        } catch (error) {
+            const code = error instanceof Error && 'code' in error ? String(error.code) : 'unknown';
+            logEvent('info', `npm candidate unavailable: ${candidate} (${code})`);
         }
     }
-    if (!npmCommand) throw new Error('Unable to locate npm');
+    if (!npmCommand) {
+        const path = process.env['PATH'] ?? '(unset)';
+        logEvent('error', `Unable to locate an executable npm; PATH=${path}`);
+        throw new Error('Unable to locate an executable npm; see diagnostics');
+    }
 
     const npm = npmCommand;
-    const runNpm = (args: string[]) => execFileAsync(
-        npm.path,
-        [...npm.args, ...args],
-        { env: process.env },
-    );
+    const runNpm = async (args: string[]) => {
+        const commandArgs = [...npm.args, ...args];
+        logEvent('info', `Running npm: ${npm.path} ${commandArgs.join(' ')}`);
+        try {
+            const result = await execFileAsync(npm.path, commandArgs, { env: process.env });
+            logEvent('info', `npm completed successfully: ${args.join(' ')}`);
+            return result;
+        } catch (error) {
+            const details = error instanceof Error ? error : new Error(String(error));
+            const code = 'code' in details ? String(details.code) : 'unknown';
+            const stderr = 'stderr' in details && typeof details.stderr === 'string'
+                ? details.stderr.trim().slice(-1000)
+                : '';
+            logEvent('error', `npm failed (code=${code}, path=${npm.path}, args=${commandArgs.join(' ')})${stderr ? ` stderr=${stderr}` : ''}`);
+            throw details;
+        }
+    };
     await runNpm(['install', '-g', 'windsor-bot@latest']);
     const { stdout } = await runNpm(['root', '-g']);
     const packageJsonPath = join(stdout.trim(), 'windsor-bot', 'package.json');
