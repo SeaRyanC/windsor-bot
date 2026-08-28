@@ -19,6 +19,15 @@ function chooseFontSize(totalLines: number): number {
     return FONT_BODY_NORMAL;
 }
 
+function countLayoutLines(lines: string[]): number {
+    const longestLine = lines.reduce((max, line) => Math.max(max, line.length), 0);
+    return longestLine > 24
+        ? 9
+        : lines.length <= 2
+            ? 2
+            : lines.length;
+}
+
 
 export async function buildPdfBuffer(job: PrintJob, paperSize: string): Promise<Buffer> {
     return new Promise<Buffer>((resolve, reject) => {
@@ -35,7 +44,7 @@ export async function buildPdfBuffer(job: PrintJob, paperSize: string): Promise<
         doc.on('end', () => resolve(Buffer.concat(chunks)));
         doc.on('error', reject);
 
-        const bodyFontSize = chooseFontSize(job.lines.length <= 2 ? 2 : job.lines.length);
+        const bodyFontSize = chooseFontSize(countLayoutLines(job.lines));
 
         // Header
         if (job.header) {

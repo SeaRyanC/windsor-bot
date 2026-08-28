@@ -38,6 +38,15 @@ function chooseLineHeight(totalLines: number): { lineHeight: number; fontPath: s
     return { lineHeight: LINE_HEIGHT_NORMAL, fontPath: FONT_16 };
 }
 
+function countLayoutLines(lines: string[]): number {
+    const longestLine = lines.reduce((max, line) => Math.max(max, line.length), 0);
+    return longestLine > 24
+        ? 9
+        : lines.length <= 2
+            ? 2
+            : lines.length;
+}
+
 function wrapText(text: string, font: Awaited<ReturnType<typeof loadFont>>, maxWidth: number): string[] {
     if (!text) return [''];
     const words = text.split(' ');
@@ -66,7 +75,7 @@ async function renderQrCode(url: string) {
 
 
 export async function renderJobToPng(job: PrintJob): Promise<Buffer> {
-    const totalLines = job.lines.length <= 2 ? 2 : job.lines.length;
+    const totalLines = countLayoutLines(job.lines);
     const { lineHeight, fontPath } = chooseLineHeight(totalLines);
 
     const fontNormal = await loadFont(FONT_16);

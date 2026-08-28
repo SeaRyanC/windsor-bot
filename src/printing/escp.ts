@@ -37,12 +37,21 @@ function chooseFontForLines(totalLines: number): { fontSize: FontSize; cols: num
     }
 }
 
+function countLayoutLines(lines: string[]): number {
+    const longestLine = lines.reduce((max, line) => Math.max(max, line.length), 0);
+    return longestLine > COLS_DOUBLE
+        ? 9
+        : lines.length <= 2
+            ? 2
+            : lines.length;
+}
+
 
 export async function buildEscpBuffer(job: PrintJob): Promise<Buffer> {
     const conn = new InMemory();
     const printer = await Printer.CONNECT('TM-T20', conn);
 
-    const { fontSize, cols } = chooseFontForLines(job.lines.length <= 2 ? 2 : job.lines.length);
+    const { fontSize, cols } = chooseFontForLines(countLayoutLines(job.lines));
 
     // Header
     if (job.header) {

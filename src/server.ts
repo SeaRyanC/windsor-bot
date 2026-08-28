@@ -92,17 +92,20 @@ async function updateGlobalBot(): Promise<string> {
         '/usr/local/bin/npm',
         '/opt/homebrew/bin/npm',
         '/usr/bin/npm',
+        'npm',
     ]
         .filter((candidate): candidate is string => Boolean(candidate))
-        .map(candidate => ({
-            path: candidate.endsWith('.js') ? process.execPath : candidate,
-            args: candidate.endsWith('.js') ? [candidate] : [],
-        }));
+        .map(candidate => candidate.trim())
+        .filter((candidate, index, candidates) => candidates.indexOf(candidate) === index);
     let npmCommand: { path: string; args: string[] } | undefined;
     for (const candidate of npmCandidates) {
+        const command = candidate.endsWith('.js')
+            ? { path: process.execPath, args: [candidate] }
+            : { path: candidate, args: [] };
         try {
-            await access(candidate.path);
-            npmCommand = candidate;
+            // Validate the script itself, not just the Node executable used to run it.
+            if (candidate !== 'npm') await access(candidate);
+            npmCommand = command;
             break;
         } catch {
             // Try the next known npm installation location.

@@ -62,6 +62,15 @@ function chooseFontForLines(totalLines: number): { fontSize: string; charsPerLin
     }
 }
 
+function countLayoutLines(lines: string[]): number {
+    const longestLine = lines.reduce((max, line) => Math.max(max, line.length), 0);
+    return longestLine > CHARS_DOUBLE
+        ? 9
+        : lines.length <= 2
+            ? 2
+            : lines.length;
+}
+
 
 export async function getConnectedPrinter(): Promise<string | null> {
     // Try CUPS first
@@ -106,7 +115,7 @@ export async function formatPrintJob(job: PrintJob): Promise<Buffer> {
 
     // Determine content lines count for font sizing
     const rawLines = job.lines;
-    const previewFontLines = rawLines.length <= 2 ? 2 : rawLines.length;
+    const previewFontLines = countLayoutLines(rawLines);
     const { fontSize, charsPerLine } = chooseFontForLines(previewFontLines);
 
     // Header
