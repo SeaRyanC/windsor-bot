@@ -28,10 +28,10 @@ function wrapText(text: string, width: number): string[] {
 type FontSize = 'double' | 'tall' | 'normal';
 
 function chooseFontForLines(totalLines: number): { fontSize: FontSize; cols: number } {
-    if (totalLines <= 4) {
-        return { fontSize: 'double', cols: COLS_DOUBLE };
-    } else if (totalLines <= 8) {
-        return { fontSize: 'tall', cols: COLS_DOUBLE };
+    // Keep short messages large without relying on the printer's
+    // double-width glyph capacity, which varies by model and font.
+    if (totalLines <= 8) {
+        return { fontSize: 'tall', cols: COLS_NORMAL };
     } else {
         return { fontSize: 'normal', cols: COLS_NORMAL };
     }
