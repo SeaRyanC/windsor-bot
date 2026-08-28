@@ -256,11 +256,16 @@ export function createWindsorBot(): WindsorBotHandle {
             const { reaction, message } = await hydrateReaction(reactionEvent);
             const config = getReusableConfig(message);
             if (!config) return;
-            if ([...message.reactions.cache.values()].some(candidate => candidate.me)) return;
-            if (reusableStates.has(message.id)) return;
+            const emoji = reaction.emoji.name ?? reaction.emoji.id ?? 'unknown';
+            logEvent('info', `Reusable reaction added: message=${message.id}, channel=${message.channelId}, emoji=${emoji}, user=${user.id}`);
+            if (reusableStates.has(message.id)) {
+                logEvent('info', `Ignoring reusable reaction for message=${message.id}; print already in progress`);
+                return;
+            }
 
             const state = { reaction, cancelled: false, status: 'printing' as const };
             reusableStates.set(message.id, state);
+            logEvent('info', `Starting reusable print for message=${message.id}`);
             await handleReusablePrint(message, config, state);
         } catch (err) {
             logEvent('error', `Reusable List reaction handling failed: ${err}`);
@@ -283,6 +288,9 @@ export function createWindsorBot(): WindsorBotHandle {
                 pendingPrints.delete(message.id);
                 await removeReactionSafe(message, Reaction.waiting);
                 if (state.status !== 'printing') reusableStates.delete(message.id);
+                logEvent('info', `Reusable reaction removed: message=${message.id}; cancelled ${state.status} print`);
+            } else {
+                logEvent('info', `Reusable reaction removed: message=${message.id}; no active print`);
             }
             await removeOwnReactionSafe(reaction);
         } catch (err) {
@@ -705,13 +713,13 @@ export function createWindsorBot(): WindsorBotHandle {
                 state.status = 'pending';
                 await reactSafe(message, Reaction.waiting);
                 enqueuePendingPrint(message, () => handleReusablePrint(message, config, state));
-                logEvent('info', `Printer unavailable for reusable message in #${message.channelId}`);
+                logEvent('info', `Printer unavailable for reusable message=${message.id} in #${message.channelId}; waiting for retry`);
                 return;
             }
             reusableStates.delete(message.id);
             await removeReactionSafe(message, Reaction.waiting);
             await replySafe(message, `⏸️ Print failed: ${err instanceof Error ? err.message : String(err)}`);
-            logEvent('error', `Reusable List print failed: ${err}`);
+            logEvent('error', `Reusable List print failed: message=${message.id}: ${err}`);
             return;
         }
 
@@ -724,7 +732,7 @@ export function createWindsorBot(): WindsorBotHandle {
 
         await message.react(state.reaction.emoji);
         state.status = 'printed';
-        logEvent('print', `Printed reusable message from ${message.author.username}`);
+        logEvent('print', `Printed reusable message=${message.id} from ${message.author.username}; acknowledgement reaction added`);
     }
 
     async function retryFailedMessages(message: Message): Promise<number> {
