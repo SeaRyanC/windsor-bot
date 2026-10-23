@@ -7,6 +7,15 @@ import type { PrintJob } from '../types.ts';
 const PAGE_WIDTH = 560;
 const MARGIN = 20;
 const TEXT_WIDTH = PAGE_WIDTH - MARGIN * 2;
+const FONT_SCALE = 1.5;
+const HEADER_SIZE = 28 * FONT_SCALE;
+const BODY_NORMAL_SIZE = 18 * FONT_SCALE;
+const BODY_TALL_SIZE = 22 * FONT_SCALE;
+const BODY_DOUBLE_SIZE = 28 * FONT_SCALE;
+const FOOTER_SIZE = 16 * FONT_SCALE;
+const METADATA_SIZE = 14 * FONT_SCALE;
+const QR_LABEL_SIZE = 16 * FONT_SCALE;
+const QR_URL_SIZE = 14 * FONT_SCALE;
 const FONT_REGULAR = new URL('../../assets/fonts/Inter-Regular.ttf', import.meta.url).pathname;
 const FONT_BOLD = new URL('../../assets/fonts/Inter-Bold.ttf', import.meta.url).pathname;
 
@@ -70,7 +79,7 @@ async function imageData(path: string): Promise<string> {
 
 export async function renderJobToPng(job: PrintJob): Promise<Buffer> {
     const lines: RenderLine[] = [];
-    if (job.header) addText(lines, job.header, 28, true, 12);
+    if (job.header) addText(lines, job.header, HEADER_SIZE, true, 12);
 
     let icon: { data: string; width: number; height: number } | undefined;
     if (job.iconPath) {
@@ -81,7 +90,11 @@ export async function renderJobToPng(job: PrintJob): Promise<Buffer> {
         }
     }
 
-    const bodySize = job.fontSize === 'double' ? 28 : job.fontSize === 'tall' ? 22 : 18;
+    const bodySize = job.fontSize === 'double'
+        ? BODY_DOUBLE_SIZE
+        : job.fontSize === 'tall'
+            ? BODY_TALL_SIZE
+            : BODY_NORMAL_SIZE;
     for (const line of job.lines) addText(lines, line || ' ', bodySize);
     if (job.lines.length > 0) lines[lines.length - 1]!.gapAfter = 12;
 
@@ -95,12 +108,14 @@ export async function renderJobToPng(job: PrintJob): Promise<Buffer> {
             data: `data:image/png;base64,${(await QRCode.toBuffer(url, { type: 'png', width: 120, margin: 1 })).toString('base64')}`,
         });
     }
-    if (job.footer) addText(lines, job.footer, 16, true, 8);
-    for (const line of job.metadataLines ?? []) addText(lines, line, 14);
+    if (job.footer) addText(lines, job.footer, FOOTER_SIZE, true, 8);
+    for (const line of job.metadataLines ?? []) addText(lines, line, METADATA_SIZE);
 
     const textHeight = lines.reduce((height, line) => height + line.size * 1.35 + (line.gapAfter ?? 0), 0);
     const iconHeight = icon ? icon.height + 8 : 0;
-    const qrHeight = qrEntries.reduce((height, entry) => height + 120 + 8 + 16 * wrapText(entry.url, 14).length + 12, 0);
+    const qrHeight = qrEntries.reduce((height, entry) =>
+        height + 8 + QR_LABEL_SIZE + 4 + 128
+        + QR_URL_SIZE * 1.35 * wrapText(entry.url, QR_URL_SIZE).length, 0);
     const height = Math.max(100, MARGIN * 2 + textHeight + iconHeight + qrHeight + 20);
     let y = MARGIN;
     const svgLines: string[] = [];
@@ -110,23 +125,23 @@ export async function renderJobToPng(job: PrintJob): Promise<Buffer> {
         y += line.size * 0.35 + (line.gapAfter ?? 0);
     };
 
-    for (const line of lines.slice(0, job.header ? wrapText(job.header, 28).length : 0)) text(line);
+    for (const line of lines.slice(0, job.header ? wrapText(job.header, HEADER_SIZE).length : 0)) text(line);
     if (icon) {
         y += 8;
         svgLines.push(`<image x="${MARGIN}" y="${y}" width="${icon.width}" height="${icon.height}" preserveAspectRatio="xMidYMid meet" href="${icon.data}"/>`);
         y += icon.height + 8;
     }
-    const firstBody = job.header ? wrapText(job.header, 28).length : 0;
+    const firstBody = job.header ? wrapText(job.header, HEADER_SIZE).length : 0;
     for (const line of lines.slice(firstBody)) text(line);
     for (const entry of qrEntries) {
         y += 8;
-        svgLines.push(`<text x="${MARGIN}" y="${y + 16}" font-family="Inter" font-size="16">${escapeXml(entry.label)}</text>`);
-        y += 20;
+        svgLines.push(`<text x="${MARGIN}" y="${y + QR_LABEL_SIZE}" font-family="Inter" font-size="${QR_LABEL_SIZE}">${escapeXml(entry.label)}</text>`);
+        y += QR_LABEL_SIZE + 4;
         svgLines.push(`<image x="${MARGIN}" y="${y}" width="120" height="120" href="${entry.data}"/>`);
         y += 128;
-        for (const line of wrapText(entry.url, 14)) {
-            svgLines.push(`<text x="${MARGIN}" y="${y + 14}" font-family="Inter" font-size="14">${escapeXml(line)}</text>`);
-            y += 18;
+        for (const line of wrapText(entry.url, QR_URL_SIZE)) {
+            svgLines.push(`<text x="${MARGIN}" y="${y + QR_URL_SIZE}" font-family="Inter" font-size="${QR_URL_SIZE}">${escapeXml(line)}</text>`);
+            y += QR_URL_SIZE * 1.35;
         }
     }
 
