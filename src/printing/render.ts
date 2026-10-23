@@ -1,6 +1,7 @@
 import { readFile } from 'fs/promises';
 import { extname } from 'path';
 import { Resvg } from '@resvg/resvg-js';
+import { Jimp } from 'jimp';
 import QRCode from 'qrcode';
 import type { PrintJob } from '../types.ts';
 
@@ -68,13 +69,21 @@ function addText(lines: RenderLine[], text: string, size: number, bold = false, 
     if (gapAfter > 0) lines[lines.length - 1]!.gapAfter = gapAfter;
 }
 
-async function imageData(path: string): Promise<string> {
+async function imageData(path: string): Promise<{ data: string; width: number; height: number }> {
     const data = await readFile(path);
     const extension = extname(path).toLowerCase();
     const mime = extension === '.jpg' || extension === '.jpeg' ? 'image/jpeg'
         : extension === '.svg' ? 'image/svg+xml'
             : 'image/png';
-    return `data:${mime};base64,${data.toString('base64')}`;
+    const image = await Jimp.read(data);
+    const scale = image.width <= TEXT_WIDTH
+        ? Math.max(1, Math.floor(TEXT_WIDTH / image.width))
+        : TEXT_WIDTH / image.width;
+    return {
+        data: `data:${mime};base64,${data.toString('base64')}`,
+        width: Math.round(image.width * scale),
+        height: Math.round(image.height * scale),
+    };
 }
 
 export async function renderJobToPng(job: PrintJob): Promise<Buffer> {
@@ -84,7 +93,7 @@ export async function renderJobToPng(job: PrintJob): Promise<Buffer> {
     let icon: { data: string; width: number; height: number } | undefined;
     if (job.iconPath) {
         try {
-            icon = { data: await imageData(job.iconPath), width: TEXT_WIDTH, height: 220 };
+            icon = await imageData(job.iconPath);
         } catch (error) {
             throw new Error(`Failed to load image ${job.iconPath}`, { cause: error });
         }
