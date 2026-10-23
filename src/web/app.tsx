@@ -41,12 +41,17 @@ interface StatusData {
 }
 
 interface ConfigData {
-    discordToken: string;
-    openaiKey: string;
+    discordToken: SecretSummary;
+    openaiKey: SecretSummary;
     serverId: string | null;
     diagnosticsPort: number;
     channels: ChannelMapping[];
     configPath: string;
+}
+
+interface SecretSummary {
+    configured: boolean;
+    lastFour: string | null;
 }
 
 interface VersionData {
@@ -125,6 +130,33 @@ function Field({ label, type = 'text', value, onChange, placeholder }: {
                 onInput={e => onChange((e.currentTarget as HTMLInputElement).value)}
                 style={S.input}
             />
+        </label>
+    );
+}
+
+function SecretField({ label, value, onChange, onSave, saving, placeholder }: {
+    label: string;
+    value: string;
+    onChange: (v: string) => void;
+    onSave: () => void;
+    saving: boolean;
+    placeholder: string;
+}): JSX.Element {
+    return (
+        <label style={S.label}>
+            <span style={S.labelText}>{label}</span>
+            <div style={{ display: 'flex', gap: '8px' }}>
+                <input
+                    type="password"
+                    value={value}
+                    placeholder={value ? '' : placeholder}
+                    onInput={e => onChange((e.currentTarget as HTMLInputElement).value)}
+                    style={{ ...S.input, flex: 1 }}
+                />
+                <button type="button" style={S.btn} onClick={onSave} disabled={saving}>
+                    {saving ? 'Saving…' : 'Save'}
+                </button>
+            </div>
         </label>
     );
 }
@@ -236,28 +268,25 @@ function BotSetup({ config, onSave }: {
     config: ConfigData | null;
     onSave: () => void;
 }): JSX.Element {
-    const [discordToken, setDiscordToken] = useState(config?.discordToken ?? '');
+    const [discordToken, setDiscordToken] = useState('');
     const [serverId, setServerId] = useState(config?.serverId ?? '');
-    const [openaiKey, setOpenaiKey] = useState(config?.openaiKey ?? '');
+    const [openaiKey, setOpenaiKey] = useState('');
     const [diagnosticsPort, setDiagnosticsPort] = useState(String(config?.diagnosticsPort ?? 8080));
     const [msg, setMsg] = useState('');
     const [err, setErr] = useState('');
     const [saving, setSaving] = useState(false);
+    const [savingSecret, setSavingSecret] = useState<'discordToken' | 'openaiKey' | null>(null);
 
     useEffect(() => {
-        setDiscordToken(config?.discordToken ?? '');
         setServerId(config?.serverId ?? '');
-        setOpenaiKey(config?.openaiKey ?? '');
         setDiagnosticsPort(String(config?.diagnosticsPort ?? 8080));
-    }, [config?.discordToken, config?.openaiKey, config?.serverId, config?.diagnosticsPort]);
+    }, [config?.serverId, config?.diagnosticsPort]);
 
     async function save(): Promise<void> {
         setSaving(true);
         setErr(''); setMsg('');
         try {
             const body: Record<string, unknown> = {
-                discordToken: discordToken.trim(),
-                openaiKey: openaiKey.trim(),
                 serverId: serverId.trim() || null,
                 diagnosticsPort: Number(diagnosticsPort),
             };
@@ -271,15 +300,45 @@ function BotSetup({ config, onSave }: {
         }
     }
 
+    async function saveSecret(field: 'discordToken' | 'openaiKey', value: string): Promise<void> {
+        setSavingSecret(field);
+        setErr(''); setMsg('');
+        try {
+            await jsonPost('/api/config', { [field]: value.trim() });
+            setMsg(`${field === 'discordToken' ? 'Discord token' : 'OpenAI key'} saved.`);
+            if (field === 'discordToken') setDiscordToken('');
+            else setOpenaiKey('');
+            onSave();
+        } catch (e) {
+            setErr(e instanceof Error ? e.message : String(e));
+        } finally {
+            setSavingSecret(null);
+        }
+    }
+
     return (
         <section style={S.box}>
             <h2 style={{ marginTop: 0 }}>Bot Setup</h2>
             {config && <p style={{ color: '#b4bdc8', marginTop: 0 }}>Config: {config.configPath}</p>}
             {err && <p style={S.err}>{err}</p>}
             {msg && <p style={S.ok}>{msg}</p>}
-            <Field label="Discord Token" value={discordToken} onChange={setDiscordToken} placeholder={makeFakeDiscordToken()} />
+            <SecretField
+                label="Discord Token"
+                value={discordToken}
+                onChange={setDiscordToken}
+                onSave={() => void saveSecret('discordToken', discordToken)}
+                saving={savingSecret === 'discordToken'}
+                placeholder={secretPlaceholder(config?.discordToken)}
+            />
             <Field label="Server ID" value={serverId} onChange={setServerId} placeholder={makeFakeServerID()} />
-            <Field label="OpenAI Key (optional)" value={openaiKey} onChange={setOpenaiKey} placeholder="OpenAI API key" />
+            <SecretField
+                label="OpenAI Key (optional)"
+                value={openaiKey}
+                onChange={setOpenaiKey}
+                onSave={() => void saveSecret('openaiKey', openaiKey)}
+                saving={savingSecret === 'openaiKey'}
+                placeholder={secretPlaceholder(config?.openaiKey)}
+            />
             <Field label="Diagnostics Port" type="number" value={diagnosticsPort} onChange={setDiagnosticsPort} placeholder="8080" />
             <button style={S.btn} onClick={() => void save()} disabled={saving}>
                 {saving ? 'Saving…' : 'Save'}
@@ -731,7 +790,6 @@ function App(): JSX.Element {
     );
 }
 
-const Base64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 const Numeric = "0123456789";
 
 function randomChars(alphabet: string, length: number): string {
@@ -742,12 +800,8 @@ function randomChars(alphabet: string, length: number): string {
     return out;
 }
 
-function makeFakeDiscordToken(): string {
-    return [
-        randomChars(Base64, 24),
-        randomChars(Base64, 6),
-        randomChars(Base64, 32),
-    ].join(".");
+function secretPlaceholder(secret: SecretSummary | undefined): string {
+    return secret?.configured && secret.lastFour ? `...${secret.lastFour}` : 'unset';
 }
 
 function makeFakeServerID(): string {

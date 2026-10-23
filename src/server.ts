@@ -20,6 +20,12 @@ const MAX_EVENTS = 200;
 const events: DiagnosticEvent[] = [];
 const execFileAsync = promisify(execFile);
 
+function secretSummary(value: string | undefined): { configured: boolean; lastFour: string | null } {
+    return value
+        ? { configured: true, lastFour: value.slice(-4) }
+        : { configured: false, lastFour: null };
+}
+
 export const status: BotStatus = {
     connected: false,
     tag: null,
@@ -109,6 +115,7 @@ async function updateGlobalBot(): Promise<string> {
                     const versionRoot = join(nvmDir, 'versions', 'node', version.name);
                     nvmCandidates.push(join(versionRoot, 'bin', 'npm'));
                     nvmCandidates.push(join(versionRoot, 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'));
+                    nvmCandidates.push(join(versionRoot, 'bin', 'corepack'));
                 }
             }
             logEvent('info', `Found ${nvmCandidates.length} nvm npm candidate(s) under ${nvmDir}`);
@@ -128,11 +135,13 @@ async function updateGlobalBot(): Promise<string> {
 
     let npmCommand: { path: string; args: string[] } | undefined;
     for (const candidate of npmCandidates) {
-        const nvmRoot = candidate.match(/(\/\.nvm\/versions\/node\/[^/]+)(?:\/bin\/npm|\/lib\/node_modules\/npm\/bin\/npm-cli\.js)$/)?.[1];
+        const nvmRoot = candidate.match(/(\/\.nvm\/versions\/node\/[^/]+)(?:\/bin\/npm|\/lib\/node_modules\/npm\/bin\/npm-cli\.js|\/bin\/corepack)$/)?.[1];
         const command = nvmRoot
             ? {
                 path: join(nvmRoot, 'bin', 'node'),
-                args: [join(nvmRoot, 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js')],
+                args: candidate.endsWith('/corepack')
+                    ? [join(nvmRoot, 'bin', 'corepack'), 'npm']
+                    : [join(nvmRoot, 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js')],
             }
             : candidate.endsWith('.js')
                 ? { path: process.execPath, args: [candidate] }
@@ -142,7 +151,7 @@ async function updateGlobalBot(): Promise<string> {
             await access(candidate, constants.R_OK | (candidate.endsWith('.js') ? 0 : constants.X_OK));
             if (nvmRoot) {
                 await access(command.path, constants.X_OK);
-                await access(command.args[0]!, constants.R_OK);
+                await access(command.args[0]!, candidate.endsWith('/corepack') ? constants.X_OK : constants.R_OK);
             }
             npmCommand = command;
             logEvent('info', `Using npm candidate ${candidate}${command.args.length > 0 ? ` via ${command.path}` : ''}`);
@@ -159,7 +168,8 @@ async function updateGlobalBot(): Promise<string> {
     }
 
     const npm = npmCommand;
-    const nvmPrefix = npm.path.match(/(\/\.nvm\/versions\/node\/[^/]+)\/bin\/node$/)?.[1];
+    const nvmPrefix = npm.path.match(/(\/\.nvm\/versions\/node\/[^/]+)\/bin\/node$/)?.[1]
+        ?? npm.args[0]?.match(/(\/\.nvm\/versions\/node\/[^/]+)\/bin\/corepack$/)?.[1];
     const npmEnv = nvmPrefix
         ? { ...process.env, NPM_CONFIG_PREFIX: nvmPrefix }
         : process.env;
@@ -359,8 +369,8 @@ export function startDiagnosticsServer(port: number): void {
             if (method === 'GET' && urlPath === '/api/config') {
                 const cfg = getCurrentConfig();
                 sendJson(res, 200, {
-                    discordToken: cfg.discordToken ?? '',
-                    openaiKey: cfg.openaiKey ?? '',
+                    discordToken: secretSummary(cfg.discordToken),
+                    openaiKey: secretSummary(cfg.openaiKey),
                     serverId: cfg.serverId ?? null,
                     diagnosticsPort: cfg.diagnosticsPort,
                     channels: cfg.channels,
@@ -398,8 +408,8 @@ export function startDiagnosticsServer(port: number): void {
                 await updateConfig(patch as Parameters<typeof updateConfig>[0]);
                 const updated = getCurrentConfig();
                 sendJson(res, 200, {
-                    discordToken: updated.discordToken ?? '',
-                    openaiKey: updated.openaiKey ?? '',
+                    discordToken: secretSummary(updated.discordToken),
+                    openaiKey: secretSummary(updated.openaiKey),
                     serverId: updated.serverId ?? null,
                     diagnosticsPort: updated.diagnosticsPort,
                     channels: updated.channels,

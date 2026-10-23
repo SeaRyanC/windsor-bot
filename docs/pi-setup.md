@@ -37,16 +37,26 @@ has screenshots and troubleshooting for each step.
    printing tools:
 
    ```bash
-   sudo apt update && sudo apt upgrade -y
+   sudo apt update
+   sudo apt upgrade -y
    sudo apt install -y nodejs npm cups
-   node --version
-   npm --version
    ```
 
-5. Install Windsor globally:
+   Check that node and npm installed successfully, these should print version numbers:
+
+   ```bash
+   node --version
+   npm --version
+   ```   
+
+5. Install Windsor:
 
    ```bash
    sudo npm install --global windsor-bot
+   ```
+
+   Verify the install worked, this should print a path of some kind:
+   ```bash
    command -v windsor-bot
    ```
 
@@ -54,18 +64,15 @@ has screenshots and troubleshooting for each step.
    be stored here:
 
    ```bash
-   mkdir -p ~/windsor
+   mkdir ~/windsor
    cd ~/windsor
    ```
 
-7. Connect the USB printer. For a direct ESC/P printer, identify the device:
+7. Connect the USB printer. For a direct ESC/P printer, identify the device.
+   This can show up in a variety of names under `dev`, check for something like
+   `/dev/ttyUSB0`, `/dev/ttyACM0`, or `/dev/usb/lp0`
 
-   ```bash
-   ls -l /dev/ttyUSB* /dev/ttyACM* 2>/dev/null
-   ```
-
-   The usual result is `/dev/ttyUSB0` or `/dev/ttyACM0`. Add the login user to
-   the device-access group, then reconnect over SSH:
+   Add the login user to the device-access group, then reconnect over SSH:
 
    ```bash
    sudo usermod -aG dialout "$USER"
@@ -92,22 +99,22 @@ shell's username or `nvm` settings, so use the actual account and absolute
 binary path. Record them while logged in as the account that should run
 Windsor:
 
+Prints your username:
 ```bash
 id -un
+```
+
+Prints your home directory:
+```bash
 echo "$HOME"
+```
+
+Prints the windsor entry point:
+```
 command -v windsor-bot
 ```
 
-The first command must print an existing Linux username, and the last command
-must print an executable path. In the example below the account is `piuser`,
-the home directory is `/home/piuser`, and the installed command is
-`/usr/bin/windsor-bot`. If your output is different, substitute your values
-everywhere in the service file. For example, a Pi account named `windsor`
-uses `User=windsor` and `/home/windsor/...`; do not leave `User=piuser` unless
-that account actually exists.
-
 Create `/etc/systemd/system/windsor.service`:
-
 ```bash
 sudo nano /etc/systemd/system/windsor.service
 ```
@@ -125,7 +132,7 @@ Wants=network-online.target
 Type=simple
 User=piuser
 WorkingDirectory=/home/piuser/windsor
-ExecStart=/usr/bin/windsor-bot
+ExecStart=/usr/local/bin/windsor-bot
 Restart=on-failure
 RestartSec=10
 
